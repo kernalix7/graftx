@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/kernalix7/graftx/security/policy
+    about: >-
+      Please do NOT file a public issue for security vulnerabilities. Email
+      kernalix7@kodenet.io instead, following the disclosure process in
+      SECURITY.md.
+  - name: Questions and general discussion
+    url: https://github.com/kernalix7/graftx
+    about: For general questions or usage help, please use the project repository.

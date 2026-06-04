@@ -1,0 +1,8 @@
+# GitHub repo 'Sponsor' button. GitHub Sponsors first (renders with the GitHub
+# heart). Ko-fi is on GitHub's recognized list so it uses the `ko_fi:` field
+# (renders with the Ko-fi icon). fairy.hada.io is a Korean tipping platform not
+# on the recognized list, so it goes under `custom:` (generic external link).
+github: kernalix7
+ko_fi: kernalix7
+custom:
+  - https://fairy.hada.io/@kernalix7

@@ -1,0 +1,19 @@
+[package]
+name = "graftx-client"
+description = "GraftX Linux-side API shims (libvulkan.so, libGL.so, libcuda.so, ...)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# cdylib: drop-in .so shims that export the intercepted API's C symbols.
+# rlib: so the rest of the workspace (and tests) can link against it.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+graftx-protocol.workspace = true
+graftx-transport.workspace = true
+thiserror.workspace = true

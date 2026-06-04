@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/graftx-protocol",
+    "crates/graftx-transport",
+    "crates/graftx-client",
+    "crates/graftx-server",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["Kim DaeHyun <kernalix7@kodenet.io>"]
+repository = "https://github.com/kernalix7/graftx"
+
+[workspace.dependencies]
+graftx-protocol = { path = "crates/graftx-protocol" }
+graftx-transport = { path = "crates/graftx-transport" }
+thiserror = "2"

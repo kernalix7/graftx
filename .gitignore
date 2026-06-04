@@ -1,0 +1,17 @@
+# Rust build output
+/target
+**/*.rs.bk
+
+# Editor / OS noise
+*.swp
+.DS_Store
+.vscode/
+
+# Local AI-assistant tooling (symlinks into private .priv-storage; never commit)
+.claude
+/CLAUDE.md
+/AGENTS.md
+.cursorrules
+.mcp.json
+.priv-storage/
+tmp-igbkp/
