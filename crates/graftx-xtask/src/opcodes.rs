@@ -31,7 +31,8 @@ impl OpcodeEntry {
 }
 
 /// The canonical opcode list, in the order it should appear in the table:
-/// Core opcodes first, then Vulkan, each in ascending call-id order.
+/// Core opcodes first, then Vulkan, OpenGL, and CUDA, each in ascending
+/// call-id order within its API.
 pub const OPCODES: &[OpcodeEntry] = &[
     OpcodeEntry {
         api_name: "Core",
@@ -99,6 +100,60 @@ pub const OPCODES: &[OpcodeEntry] = &[
         name: "DEVICE_WAIT_IDLE",
         call_id: 0x0008,
     },
+    OpcodeEntry {
+        api_name: "Vulkan",
+        api_id: 0x01,
+        name: "ALLOCATE_MEMORY",
+        call_id: 0x0010,
+    },
+    OpcodeEntry {
+        api_name: "Vulkan",
+        api_id: 0x01,
+        name: "CREATE_BUFFER",
+        call_id: 0x0011,
+    },
+    OpcodeEntry {
+        api_name: "Vulkan",
+        api_id: 0x01,
+        name: "BIND_BUFFER_MEMORY",
+        call_id: 0x0012,
+    },
+    OpcodeEntry {
+        api_name: "OpenGl",
+        api_id: 0x02,
+        name: "CREATE_CONTEXT",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "OpenGl",
+        api_id: 0x02,
+        name: "MAKE_CURRENT",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "OpenGl",
+        api_id: 0x02,
+        name: "GEN_BUFFER",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "Cuda",
+        api_id: 0x03,
+        name: "CTX_CREATE",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "Cuda",
+        api_id: 0x03,
+        name: "MEM_ALLOC",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "Cuda",
+        api_id: 0x03,
+        name: "MEM_FREE",
+        call_id: 0x0003,
+    },
 ];
 
 /// Format a single opcode as `0x%02X_%06X`: the API byte, an underscore, then
@@ -128,6 +183,44 @@ pub fn render_opcode_table(entries: &[OpcodeEntry]) -> String {
             entry.name
         ));
     }
+    out
+}
+
+/// Render a Markdown coverage roll-up: one row per distinct `api_name` with the
+/// number of opcodes recorded for it, followed by a `TOTAL` row.
+///
+/// Pure and deterministic. APIs are listed in a stable order — sorted by
+/// `api_id`, ties broken by first appearance in `entries` — so the output does
+/// not depend on hash iteration order and is reproducible across runs. The
+/// output ends with a trailing newline so it composes cleanly with files or
+/// stdout.
+pub fn render_coverage(entries: &[OpcodeEntry]) -> String {
+    // Accumulate per-API counts while remembering the order in which each
+    // (api_id, api_name) pair was first seen, then sort by api_id keeping that
+    // first-seen order as the tie-breaker.
+    let mut apis: Vec<(u8, &'static str, usize)> = Vec::new();
+    for entry in entries {
+        if let Some(slot) = apis
+            .iter_mut()
+            .find(|(id, name, _)| *id == entry.api_id && *name == entry.api_name)
+        {
+            slot.2 += 1;
+        } else {
+            apis.push((entry.api_id, entry.api_name, 1));
+        }
+    }
+    // `sort_by_key` is stable, so equal `api_id`s keep their first-seen order.
+    apis.sort_by_key(|(id, _, _)| *id);
+
+    let mut out = String::new();
+    out.push_str("| API | Opcodes |\n");
+    out.push_str("| --- | --- |\n");
+    let mut total = 0usize;
+    for (_, name, count) in &apis {
+        out.push_str(&format!("| {name} | {count} |\n"));
+        total += *count;
+    }
+    out.push_str(&format!("| TOTAL | {total} |\n"));
     out
 }
 
@@ -191,7 +284,7 @@ mod tests {
         // entry).
         let data_rows = table.lines().count() - 2;
         assert_eq!(data_rows, OPCODES.len());
-        assert_eq!(data_rows, 11);
+        assert_eq!(data_rows, 20);
     }
 
     #[test]
@@ -205,5 +298,81 @@ mod tests {
             hello < create_instance,
             "Core rows should precede Vulkan rows"
         );
+    }
+
+    #[test]
+    fn coverage_counts_per_api_and_total_on_fixture() {
+        let fixture = &[
+            OpcodeEntry {
+                api_name: "Core",
+                api_id: 0x00,
+                name: "HELLO",
+                call_id: 0x000001,
+            },
+            OpcodeEntry {
+                api_name: "Core",
+                api_id: 0x00,
+                name: "WELCOME",
+                call_id: 0x000002,
+            },
+            OpcodeEntry {
+                api_name: "Vulkan",
+                api_id: 0x01,
+                name: "CREATE_INSTANCE",
+                call_id: 0x0001,
+            },
+        ];
+        let table = render_coverage(fixture);
+        assert_eq!(
+            table,
+            "| API | Opcodes |\n| --- | --- |\n| Core | 2 |\n| Vulkan | 1 |\n| TOTAL | 3 |\n"
+        );
+    }
+
+    #[test]
+    fn coverage_has_header_and_separator() {
+        let table = render_coverage(OPCODES);
+        let mut lines = table.lines();
+        assert_eq!(lines.next(), Some("| API | Opcodes |"));
+        assert_eq!(lines.next(), Some("| --- | --- |"));
+    }
+
+    #[test]
+    fn coverage_orders_apis_by_api_id() {
+        let table = render_coverage(OPCODES);
+        let core = table.find("| Core |").expect("Core row present");
+        let vulkan = table.find("| Vulkan |").expect("Vulkan row present");
+        let opengl = table.find("| OpenGl |").expect("OpenGl row present");
+        let cuda = table.find("| Cuda |").expect("Cuda row present");
+        let total = table.find("| TOTAL |").expect("TOTAL row present");
+        assert!(
+            core < vulkan && vulkan < opengl && opengl < cuda && cuda < total,
+            "rows should be ordered Core, Vulkan, OpenGl, Cuda, TOTAL:\n{table}"
+        );
+    }
+
+    #[test]
+    fn coverage_total_equals_entry_count() {
+        let table = render_coverage(OPCODES);
+        assert!(
+            table.contains(&format!("| TOTAL | {} |", OPCODES.len())),
+            "TOTAL should equal the number of opcodes ({}):\n{table}",
+            OPCODES.len()
+        );
+    }
+
+    #[test]
+    fn real_coverage_includes_all_apis_with_expected_minimum_counts() {
+        let mut counts: std::collections::HashMap<&'static str, usize> =
+            std::collections::HashMap::new();
+        for entry in OPCODES {
+            *counts.entry(entry.api_name).or_insert(0) += 1;
+        }
+        // Core plus the opcodes added for each API; counts must be at least the
+        // numbers introduced here (later additions only grow them).
+        assert!(*counts.get("Core").unwrap_or(&0) >= 3, "Core opcodes");
+        assert!(*counts.get("Vulkan").unwrap_or(&0) >= 11, "Vulkan opcodes");
+        assert!(*counts.get("OpenGl").unwrap_or(&0) >= 3, "OpenGl opcodes");
+        assert!(*counts.get("Cuda").unwrap_or(&0) >= 3, "Cuda opcodes");
     }
 }

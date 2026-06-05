@@ -46,6 +46,10 @@ fn run(args: &[String]) -> ExitCode {
             print!("{}", opcodes::render_opcode_table(opcodes::OPCODES));
             ExitCode::SUCCESS
         }
+        "coverage" => {
+            print!("{}", opcodes::render_coverage(opcodes::OPCODES));
+            ExitCode::SUCCESS
+        }
         "check-xrefs" => {
             let issues = xrefs::check_xrefs(Path::new(DOCS_DIR), &mut std::io::stdout());
             // Exit non-zero on any issue so the check can gate CI; a clean run
@@ -85,6 +89,7 @@ Usage:
 
 Subcommands:
     gen-opcodes    Generate the opcode-table source from graftx-protocol
+    coverage       Summarize opcode coverage per API as a Markdown roll-up
     check-xrefs    Validate cross-references between the docs and the protocol
     help           Show this message"
     );
@@ -115,6 +120,11 @@ mod tests {
     #[test]
     fn gen_opcodes_succeeds() {
         assert_eq!(run(&argv(&["gen-opcodes"])), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn coverage_succeeds() {
+        assert_eq!(run(&argv(&["coverage"])), ExitCode::SUCCESS);
     }
 
     #[test]
