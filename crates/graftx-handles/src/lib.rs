@@ -193,6 +193,60 @@ impl<T> HandleTable<T> {
             .filter(|slot| slot.value.is_some() && slot.kind == kind)
             .count()
     }
+
+    /// The total number of storage slots allocated by the table.
+    ///
+    /// This counts every slot — live, free, and retired — and so never shrinks
+    /// over the table's lifetime except via [`clear`](Self::clear), which leaves
+    /// the slot vector intact (so `capacity` is unchanged by `clear`). It is
+    /// always `>= len()`.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// The number of slots that have been permanently retired.
+    ///
+    /// A slot is retired when its generation reaches [`Handle::GENERATION_MAX`]
+    /// and it is freed: it is never returned to the free-list, so the generation
+    /// can never wrap to a value an old handle still holds. Retired slots hold no
+    /// value and are never reused.
+    #[must_use]
+    pub fn retired(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.retired).count()
+    }
+
+    /// Drop every live value and reset the table to hold no live entries.
+    ///
+    /// # Semantics
+    ///
+    /// Each currently-occupied slot is freed exactly as [`remove`](Self::remove)
+    /// would free it: its value is dropped and its generation is bumped (or, if
+    /// the generation is already exhausted, the slot is retired). Bumping the
+    /// generation guarantees that every handle issued before the `clear` — for
+    /// every slot, not just the live ones — is now stale and resolves to `None`,
+    /// so no future handle can alias a pre-clear handle. Freed (non-retired)
+    /// slots are returned to the free-list and reused by later inserts.
+    ///
+    /// The underlying slot storage is retained, so [`capacity`](Self::capacity)
+    /// is unchanged; only [`len`](Self::len) is reset to `0`.
+    pub fn clear(&mut self) {
+        for (slot_idx, slot) in self.slots.iter_mut().enumerate() {
+            if slot.value.take().is_none() {
+                // Already free or retired: leave its generation and free-list
+                // membership untouched so existing bookkeeping stays correct.
+                continue;
+            }
+            // Mirror `remove`'s generational bookkeeping for the live slot.
+            if slot.generation >= Handle::GENERATION_MAX {
+                slot.retired = true;
+            } else {
+                slot.generation += 1;
+                self.free.push(slot_idx as u32);
+            }
+        }
+        self.live = 0;
+    }
 }
 
 impl<T> Default for HandleTable<T> {
@@ -433,5 +487,114 @@ mod tests {
 
         let live: Vec<(u8, u32)> = table.iter().map(|(h, &v)| (h.kind(), v)).collect();
         assert_eq!(live, vec![(KIND_B, 2)]);
+    }
+
+    #[test]
+    fn capacity_grows_with_distinct_inserts_and_outpaces_len() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        assert_eq!(table.capacity(), 0);
+
+        let a = table.insert(KIND, 1);
+        assert_eq!(table.capacity(), 1);
+        let _b = table.insert(KIND, 2);
+        assert_eq!(table.capacity(), 2);
+        assert_eq!(table.capacity(), table.len());
+
+        // Freeing a slot does not shrink capacity, and reusing the freed slot
+        // does not grow it: capacity tracks allocated slots, not live ones.
+        assert_eq!(table.remove(a), Some(1));
+        assert_eq!(table.capacity(), 2);
+        assert_eq!(table.len(), 1);
+        let _c = table.insert(KIND, 3);
+        assert_eq!(table.capacity(), 2);
+        assert!(table.capacity() >= table.len());
+    }
+
+    #[test]
+    fn retired_starts_zero_and_counts_exhausted_slots() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        assert_eq!(table.retired(), 0);
+
+        // Ordinary insert/remove cycles never retire a slot.
+        let h = table.insert(KIND, 1);
+        assert_eq!(table.remove(h), Some(1));
+        assert_eq!(table.retired(), 0);
+
+        // Drive a single slot to GENERATION_MAX, then the final removal retires
+        // it; `retired()` must observe that one slot.
+        let mut last = table.insert(KIND, 0);
+        while last.generation() < Handle::GENERATION_MAX {
+            assert_eq!(table.remove(last), Some(0));
+            last = table.insert(KIND, 0);
+        }
+        assert_eq!(table.retired(), 0);
+        assert_eq!(table.remove(last), Some(0));
+        assert_eq!(table.retired(), 1);
+    }
+
+    #[test]
+    fn clear_empties_table_invalidates_handles_and_allows_reuse() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        let b = table.insert(KIND_B, 2);
+        let c = table.insert(KIND_A, 3);
+        assert_eq!(table.len(), 3);
+        let cap_before = table.capacity();
+
+        table.clear();
+
+        // The table reports no live entries and no live kinds.
+        assert_eq!(table.len(), 0);
+        assert!(table.is_empty());
+        assert_eq!(table.iter().count(), 0);
+        assert_eq!(table.count_by_kind(KIND_A), 0);
+        assert_eq!(table.count_by_kind(KIND_B), 0);
+        // Slot storage is retained: capacity is unchanged by clear.
+        assert_eq!(table.capacity(), cap_before);
+
+        // Every pre-clear handle is now stale.
+        assert_eq!(table.get(a), None);
+        assert_eq!(table.get(b), None);
+        assert_eq!(table.get(c), None);
+        assert_eq!(table.get_mut(a), None);
+        assert_eq!(table.remove(a), None);
+
+        // New inserts work and do not alias any pre-clear handle.
+        let d = table.insert(KIND_A, 10);
+        let e = table.insert(KIND_B, 20);
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.get(d), Some(&10));
+        assert_eq!(table.get(e), Some(&20));
+        for old in [a, b, c] {
+            assert_ne!(
+                d.raw(),
+                old.raw(),
+                "reused handle aliases a pre-clear handle"
+            );
+            assert_ne!(
+                e.raw(),
+                old.raw(),
+                "reused handle aliases a pre-clear handle"
+            );
+            // Pre-clear handles still resolve to nothing even after reuse.
+            assert_eq!(table.get(old), None);
+        }
+    }
+
+    #[test]
+    fn clear_on_empty_table_is_a_noop() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        table.clear();
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.capacity(), 0);
+        assert_eq!(table.retired(), 0);
+
+        // Clear after a full drain leaves the freed slots reusable.
+        let h = table.insert(KIND, 1);
+        assert_eq!(table.remove(h), Some(1));
+        table.clear();
+        assert_eq!(table.len(), 0);
+        let h2 = table.insert(KIND, 2);
+        assert_eq!(table.get(h2), Some(&2));
     }
 }
