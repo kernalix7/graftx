@@ -5,6 +5,7 @@ members = [
     "crates/graftx-transport",
     "crates/graftx-client",
     "crates/graftx-server",
+    "crates/graftx-xtask",
 ]
 
 [workspace.package]

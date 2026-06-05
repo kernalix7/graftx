@@ -1,0 +1,13 @@
+[package]
+name = "graftx-xtask"
+description = "GraftX in-repo task runner: opcode-table and docs codegen, invoked via `cargo xtask`."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "graftx-xtask"
+path = "src/main.rs"
