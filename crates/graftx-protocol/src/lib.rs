@@ -182,6 +182,18 @@ pub mod cl_op {
     pub const RELEASE_BUFFER: u32 = opcode(ApiId::OpenCl, 0x0003);
 }
 
+/// Level Zero opcodes (under [`ApiId::LevelZero`]).
+pub mod l0_op {
+    use super::{opcode, ApiId};
+
+    /// `zeContextCreate`: create a Level Zero context.
+    pub const CONTEXT_CREATE: u32 = opcode(ApiId::LevelZero, 0x0001);
+    /// `zeMemAllocDevice`: allocate a block of device memory in a context.
+    pub const MEM_ALLOC_DEVICE: u32 = opcode(ApiId::LevelZero, 0x0002);
+    /// `zeMemFree`: free a previously allocated device pointer.
+    pub const MEM_FREE: u32 = opcode(ApiId::LevelZero, 0x0003);
+}
+
 /// Vulkan request/response body encoders and decoders.
 ///
 /// These match the canonical wire bodies for the Vulkan opcodes in [`vk_op`].
@@ -966,6 +978,120 @@ pub mod cl {
             let mut r = Reader::new(buf);
             Ok(Self {
                 mem: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// Level Zero request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the Level Zero opcodes in
+/// [`l0_op`]. Every multi-byte field is little-endian and a [`Handle`] is
+/// carried as its raw 64-bit value (see [`Handle::raw`]). Short buffers decode
+/// to [`ProtocolError::UnexpectedEof`].
+///
+/// [`l0_op::CONTEXT_CREATE`](super::l0_op::CONTEXT_CREATE) takes an empty
+/// request body, and [`l0_op::MEM_FREE`](super::l0_op::MEM_FREE) replies with
+/// an empty (ack) body, so neither needs a struct here.
+pub mod l0 {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Response body for
+    /// [`l0_op::CONTEXT_CREATE`](super::l0_op::CONTEXT_CREATE).
+    ///
+    /// The request body is empty, so there is no request struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ContextCreateResponse {
+        /// Handle naming the newly created context.
+        pub context: Handle,
+    }
+
+    impl ContextCreateResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`l0_op::MEM_ALLOC_DEVICE`](super::l0_op::MEM_ALLOC_DEVICE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemAllocDeviceRequest {
+        /// Handle naming the context the memory is allocated in.
+        pub context: Handle,
+        /// Size of the allocation in bytes.
+        pub size: u64,
+    }
+
+    impl MemAllocDeviceRequest {
+        /// Append the encoded body to `out`: a raw `u64` context handle followed
+        /// by the `u64` allocation size.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+            out.extend_from_slice(&self.size.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+                size: r.u64()?,
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`l0_op::MEM_ALLOC_DEVICE`](super::l0_op::MEM_ALLOC_DEVICE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemAllocDeviceResponse {
+        /// Handle naming the newly allocated device pointer.
+        pub ptr: Handle,
+    }
+
+    impl MemAllocDeviceResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.ptr.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                ptr: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`l0_op::MEM_FREE`](super::l0_op::MEM_FREE).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemFreeRequest {
+        /// Handle naming the device pointer being freed.
+        pub ptr: Handle,
+    }
+
+    impl MemFreeRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.ptr.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                ptr: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -1907,6 +2033,80 @@ mod tests {
         );
         assert_eq!(
             cl::ReleaseBufferRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn l0_opcodes_are_in_level_zero_namespace() {
+        assert_eq!(opcode_api(l0_op::CONTEXT_CREATE), ApiId::LevelZero as u8);
+        assert_eq!(opcode_api(l0_op::MEM_ALLOC_DEVICE), ApiId::LevelZero as u8);
+        assert_eq!(opcode_api(l0_op::MEM_FREE), ApiId::LevelZero as u8);
+        assert_eq!(opcode_call(l0_op::CONTEXT_CREATE), 0x0001);
+        assert_eq!(opcode_call(l0_op::MEM_ALLOC_DEVICE), 0x0002);
+        assert_eq!(opcode_call(l0_op::MEM_FREE), 0x0003);
+        assert_ne!(l0_op::CONTEXT_CREATE, l0_op::MEM_ALLOC_DEVICE);
+        assert_ne!(l0_op::MEM_ALLOC_DEVICE, l0_op::MEM_FREE);
+    }
+
+    #[test]
+    fn l0_context_create_response_roundtrip() {
+        let resp = l0::ContextCreateResponse {
+            context: Handle::new(14, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(l0::ContextCreateResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn l0_mem_alloc_device_roundtrip() {
+        let req = l0::MemAllocDeviceRequest {
+            context: Handle::new(14, 2, 4),
+            size: 0x1234_5678_9ABC_DEF0,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(l0::MemAllocDeviceRequest::decode(&b).expect("req"), req);
+
+        let resp = l0::MemAllocDeviceResponse {
+            ptr: Handle::new(15, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(l0::MemAllocDeviceResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn l0_mem_free_roundtrip() {
+        let req = l0::MemFreeRequest {
+            ptr: Handle::new(15, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(l0::MemFreeRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn l0_bodies_reject_short_buffers() {
+        assert_eq!(
+            l0::ContextCreateResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            l0::MemAllocDeviceRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            l0::MemAllocDeviceResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            l0::MemFreeRequest::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
