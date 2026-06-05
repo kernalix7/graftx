@@ -44,6 +44,22 @@ pub fn record(api: &'static str, bytes_out: u64, bytes_in: u64) {
     global().record(api, bytes_out, bytes_in);
 }
 
+/// Append `s` to `out` with the minimal escaping needed for a JSON string body.
+///
+/// API names are `&'static str` ASCII, so only the two characters that are
+/// always illegal unescaped inside a JSON string literal — `"` and `\` — need
+/// handling; every other byte is copied through verbatim. The caller is
+/// responsible for the surrounding quotes.
+fn push_json_escaped(out: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            other => out.push(other),
+        }
+    }
+}
+
 /// A thread-safe collection of [`CallStats`] keyed by API name.
 ///
 /// Records are merged in place, so the registry only ever grows one entry per
@@ -164,6 +180,48 @@ impl ObsRegistry {
         let _ = writeln!(
             out,
             "| TOTAL | {} | {} | {} |",
+            total.calls, total.bytes_out, total.bytes_in
+        );
+        out
+    }
+
+    /// Render the current statistics as a compact JSON object.
+    ///
+    /// The shape is
+    /// `{"apis":{"<api>":{"calls":N,"bytes_out":N,"bytes_in":N},...},"total":{...}}`,
+    /// with the per-API entries emitted in ascending name order for
+    /// deterministic output and `total` aggregating every API via
+    /// [`total`](Self::total). Counts are written as plain JSON integers.
+    ///
+    /// This is hand-rolled rather than using a serialization crate: the schema
+    /// is fixed and tiny, and API names are `&'static str` ASCII, so the only
+    /// escaping needed is for `"` and `\` to keep the output valid JSON.
+    pub fn to_json(&self) -> String {
+        let rows = self.snapshot_sorted();
+
+        let mut total = CallStats::default();
+        for (_, stats) in &rows {
+            total.merge(stats);
+        }
+
+        let mut out = String::new();
+        out.push_str("{\"apis\":{");
+        for (i, (api, stats)) in rows.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('"');
+            push_json_escaped(&mut out, api);
+            // Writing into a `String` is infallible, so the result is ignored.
+            let _ = write!(
+                out,
+                "\":{{\"calls\":{},\"bytes_out\":{},\"bytes_in\":{}}}",
+                stats.calls, stats.bytes_out, stats.bytes_in
+            );
+        }
+        let _ = write!(
+            out,
+            "}},\"total\":{{\"calls\":{},\"bytes_out\":{},\"bytes_in\":{}}}}}",
             total.calls, total.bytes_out, total.bytes_in
         );
         out
@@ -437,6 +495,108 @@ mod tests {
         assert!(
             report.contains("| TOTAL | 0 | 0 | 0 |"),
             "empty report is missing a zeroed TOTAL row:\n{report}"
+        );
+    }
+
+    /// Count occurrences of `needle` in `haystack` so tests can assert on the
+    /// number of objects/brackets in the emitted JSON.
+    fn count(haystack: &str, needle: char) -> usize {
+        haystack.chars().filter(|c| *c == needle).count()
+    }
+
+    #[test]
+    fn to_json_emits_sorted_apis_with_total() {
+        let registry = ObsRegistry::new();
+        registry.record("NtCreateFile", 10, 20);
+        registry.record("NtCreateFile", 5, 7);
+        registry.record("NtClose", 1, 3);
+
+        let json = registry.to_json();
+
+        // Per-API objects use the merged counters, keyed by API name.
+        assert!(
+            json.contains("\"NtCreateFile\":{\"calls\":2,\"bytes_out\":15,\"bytes_in\":27}"),
+            "JSON is missing the NtCreateFile entry:\n{json}"
+        );
+        assert!(
+            json.contains("\"NtClose\":{\"calls\":1,\"bytes_out\":1,\"bytes_in\":3}"),
+            "JSON is missing the NtClose entry:\n{json}"
+        );
+        // The total aggregates every API.
+        assert!(
+            json.contains("\"total\":{\"calls\":3,\"bytes_out\":16,\"bytes_in\":30}"),
+            "JSON is missing the aggregate total:\n{json}"
+        );
+        // The object is wrapped under an "apis" map.
+        assert!(
+            json.starts_with("{\"apis\":{"),
+            "JSON does not open with the apis map:\n{json}"
+        );
+
+        // APIs are emitted in ascending name order.
+        let ntclose = json.find("\"NtClose\"").expect("NtClose entry present");
+        let ntcreate = json
+            .find("\"NtCreateFile\"")
+            .expect("NtCreateFile entry present");
+        assert!(
+            ntclose < ntcreate,
+            "API entries are not sorted by name:\n{json}"
+        );
+    }
+
+    #[test]
+    fn to_json_is_well_formed() {
+        let registry = ObsRegistry::new();
+        registry.record("NtCreateFile", 10, 20);
+        registry.record("NtClose", 1, 3);
+
+        let json = registry.to_json();
+
+        // Balanced braces: outer object, apis map, two api objects, total object.
+        assert_eq!(
+            count(&json, '{'),
+            count(&json, '}'),
+            "braces are not balanced:\n{json}"
+        );
+        assert_eq!(
+            count(&json, '{'),
+            5,
+            "unexpected number of objects:\n{json}"
+        );
+        // Trailing comma would be invalid JSON; the apis map must close cleanly
+        // before the total key.
+        assert!(
+            !json.contains(",}"),
+            "JSON contains a trailing comma:\n{json}"
+        );
+        assert!(
+            json.ends_with('}'),
+            "JSON does not end with a closing brace:\n{json}"
+        );
+    }
+
+    #[test]
+    fn to_json_of_empty_registry_has_empty_apis_and_zero_total() {
+        let registry = ObsRegistry::new();
+        let json = registry.to_json();
+
+        assert_eq!(
+            json, "{\"apis\":{},\"total\":{\"calls\":0,\"bytes_out\":0,\"bytes_in\":0}}",
+            "empty registry JSON is not the expected zeroed shape:\n{json}"
+        );
+    }
+
+    #[test]
+    fn to_json_escapes_quotes_and_backslashes_in_api_names() {
+        let registry = ObsRegistry::new();
+        // A `&'static str` API name containing the two characters that must be
+        // escaped inside a JSON string body.
+        registry.record(r#"odd"\name"#, 1, 2);
+
+        let json = registry.to_json();
+        assert!(
+            json.contains(r#""odd\"\\name":{"calls":1,"bytes_out":1,"bytes_in":2}"#),
+            "API name was not minimally escaped:\n{json}"
         );
     }
 
