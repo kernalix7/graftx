@@ -7,8 +7,10 @@
 //! the same bring-up and then issues a single [`graftx_client::noop`] to confirm
 //! the pipe round-trips, printing `ok`. `graftx apis` prints the API namespace
 //! table (the high byte of every opcode) as a markdown table without touching
-//! the network. With no subcommand it prints usage and the protocol version this
-//! build speaks.
+//! the network. `graftx info` prints the build and protocol identity — the
+//! CLI version, the protocol version this build speaks, and the client-reachable
+//! API list — also without touching the network. With no subcommand it prints
+//! usage and the protocol version this build speaks.
 //!
 //! Deliberately depends only on the protocol, transport, and client crates —
 //! never the server — so the CLI stays a pure client.
@@ -92,6 +94,10 @@ fn run(args: &[String]) -> ExitCode {
         },
         Some("apis") => {
             print_apis(&mut io::stdout());
+            ExitCode::SUCCESS
+        }
+        Some("info") => {
+            print_info(&mut io::stdout());
             ExitCode::SUCCESS
         }
         Some(other) => {
@@ -190,6 +196,25 @@ fn print_apis<W: Write>(out: &mut W) {
     }
 }
 
+/// Print the build and protocol identity: the CLI crate version, the protocol
+/// version this build speaks, and the client-reachable API list.
+///
+/// Reuses [`API_IDS`] — the same local list the `apis` subcommand renders — so
+/// the names track one source. Best-effort writes, like [`print_usage`]: a
+/// broken pipe on `out` shouldn't disturb the caller's chosen exit code.
+fn print_info<W: Write>(out: &mut W) {
+    let (major, minor) = graftx_client::protocol_version();
+    let _ = writeln!(out, "graftx-cli {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(out, "protocol {major}.{minor}");
+
+    let apis = API_IDS
+        .iter()
+        .map(|(_id, name)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "apis: {apis}");
+}
+
 /// Print the usage banner and the protocol version this build speaks.
 fn print_usage<W: Write>(out: &mut W) {
     let (major, minor) = graftx_client::protocol_version();
@@ -212,6 +237,10 @@ fn print_usage<W: Write>(out: &mut W) {
     let _ = writeln!(
         out,
         "    graftx apis              print the API namespace table"
+    );
+    let _ = writeln!(
+        out,
+        "    graftx info              print cli/protocol version and the API list"
     );
     let _ = writeln!(out, "    graftx help              show this message");
 }
@@ -309,6 +338,32 @@ mod tests {
         for (offset, (id, _name)) in API_IDS.iter().enumerate() {
             assert_eq!(usize::from(*id), (ApiId::Core as usize) + offset);
         }
+    }
+
+    #[test]
+    fn info_subcommand_succeeds() {
+        assert_eq!(run(&args(&["info"])), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn info_carries_version_protocol_and_apis() {
+        let (major, minor) = graftx_client::protocol_version();
+        let mut buf = Vec::new();
+        print_info(&mut buf);
+        let text = String::from_utf8(buf).expect("info output is utf-8");
+        assert!(text.contains(&format!("graftx-cli {}", env!("CARGO_PKG_VERSION"))));
+        assert!(text.contains(&format!("protocol {major}.{minor}")));
+        // The API list is reused from `API_IDS`; spot-check both ends.
+        assert!(text.contains("Core"));
+        assert!(text.contains("Amf"));
+    }
+
+    #[test]
+    fn usage_banner_lists_info_subcommand() {
+        let mut buf = Vec::new();
+        print_usage(&mut buf);
+        let text = String::from_utf8(buf).expect("usage banner is utf-8");
+        assert!(text.contains("graftx info"));
     }
 
     #[test]
