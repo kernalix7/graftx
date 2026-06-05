@@ -110,6 +110,18 @@ impl ObsRegistry {
             .record(bytes_out, bytes_in);
     }
 
+    /// Record a single call against `api` from its request and reply frames.
+    ///
+    /// Convenience over [`record`](Self::record) for the common case where the
+    /// caller has the raw frame bytes: it counts the request frame as
+    /// `bytes_out` and the reply frame as `bytes_in`, using each slice's length.
+    /// Lengths are `usize`, so they are widened to `u64`; on the 64-bit targets
+    /// GraftX runs on this is exact, and the underlying counters saturate
+    /// anyway. The byte accumulation matches [`record`](Self::record).
+    pub fn record_frame(&self, api: &'static str, request_frame: &[u8], reply_frame: &[u8]) {
+        self.record(api, request_frame.len() as u64, reply_frame.len() as u64);
+    }
+
     /// Return a point-in-time copy of the per-API statistics.
     pub fn snapshot(&self) -> HashMap<&'static str, CallStats> {
         self.lock().clone()
@@ -290,6 +302,79 @@ mod tests {
             CallStats {
                 calls: 1,
                 bytes_out: 1,
+                bytes_in: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn record_frame_counts_calls_and_frame_lengths() {
+        let registry = ObsRegistry::new();
+        registry.record_frame("NtCreateFile", &[0; 10], &[0; 20]);
+        registry.record_frame("NtCreateFile", &[0; 5], &[0; 7]);
+        registry.record_frame("NtClose", &[], &[0; 3]);
+
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(
+            snapshot["NtCreateFile"],
+            CallStats {
+                calls: 2,
+                bytes_out: 15,
+                bytes_in: 27,
+            }
+        );
+        // Empty request frame contributes zero bytes_out but still counts a call.
+        assert_eq!(
+            snapshot["NtClose"],
+            CallStats {
+                calls: 1,
+                bytes_out: 0,
+                bytes_in: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn record_frame_matches_record_with_slice_lengths() {
+        let request: &[u8] = &[1, 2, 3, 4];
+        let reply: &[u8] = &[5, 6, 7, 8, 9];
+
+        let via_frame = ObsRegistry::new();
+        via_frame.record_frame("NtReadFile", request, reply);
+
+        let via_record = ObsRegistry::new();
+        via_record.record("NtReadFile", request.len() as u64, reply.len() as u64);
+
+        assert_eq!(via_frame.snapshot(), via_record.snapshot());
+        assert_eq!(
+            via_frame.snapshot()["NtReadFile"],
+            CallStats {
+                calls: 1,
+                bytes_out: 4,
+                bytes_in: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn record_frame_with_empty_frames_counts_a_zero_byte_call() {
+        let registry = ObsRegistry::new();
+        registry.record_frame("NtClose", &[], &[]);
+
+        assert_eq!(
+            registry.snapshot()["NtClose"],
+            CallStats {
+                calls: 1,
+                bytes_out: 0,
+                bytes_in: 0,
+            }
+        );
+        assert_eq!(
+            registry.total(),
+            CallStats {
+                calls: 1,
+                bytes_out: 0,
                 bytes_in: 0,
             }
         );
