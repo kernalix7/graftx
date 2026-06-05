@@ -126,6 +126,12 @@ pub mod vk_op {
     pub const GET_DEVICE_QUEUE: u32 = opcode(ApiId::Vulkan, 0x0007);
     /// `vkDeviceWaitIdle`: block until a logical device is idle.
     pub const DEVICE_WAIT_IDLE: u32 = opcode(ApiId::Vulkan, 0x0008);
+    /// `vkAllocateMemory`: allocate a block of device memory.
+    pub const ALLOCATE_MEMORY: u32 = opcode(ApiId::Vulkan, 0x0010);
+    /// `vkCreateBuffer`: create a buffer object on a device.
+    pub const CREATE_BUFFER: u32 = opcode(ApiId::Vulkan, 0x0011);
+    /// `vkBindBufferMemory`: bind device memory to a buffer.
+    pub const BIND_BUFFER_MEMORY: u32 = opcode(ApiId::Vulkan, 0x0012);
 }
 
 /// OpenGL opcodes (under [`ApiId::OpenGl`]).
@@ -339,6 +345,142 @@ pub mod vk {
             let mut r = Reader::new(buf);
             Ok(Self {
                 queue: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`vk_op::ALLOCATE_MEMORY`](super::vk_op::ALLOCATE_MEMORY).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AllocateMemoryRequest {
+        /// Handle naming the device the memory is allocated on.
+        pub device: Handle,
+        /// Size of the allocation in bytes.
+        pub size: u64,
+    }
+
+    impl AllocateMemoryRequest {
+        /// Append the encoded body to `out`: a raw `u64` device handle followed
+        /// by the `u64` allocation size.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.device.raw().to_le_bytes());
+            out.extend_from_slice(&self.size.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                device: Handle::from_raw(r.u64()?),
+                size: r.u64()?,
+            })
+        }
+    }
+
+    /// Response body for [`vk_op::ALLOCATE_MEMORY`](super::vk_op::ALLOCATE_MEMORY).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AllocateMemoryResponse {
+        /// Handle naming the newly allocated device memory.
+        pub memory: Handle,
+    }
+
+    impl AllocateMemoryResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.memory.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                memory: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`vk_op::CREATE_BUFFER`](super::vk_op::CREATE_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateBufferRequest {
+        /// Handle naming the device the buffer is created on.
+        pub device: Handle,
+        /// Size of the buffer in bytes.
+        pub size: u64,
+        /// Buffer usage flag bits.
+        pub usage: u32,
+    }
+
+    impl CreateBufferRequest {
+        /// Append the encoded body to `out`: a raw `u64` device handle, the
+        /// `u64` buffer size, then the `u32` usage flags.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.device.raw().to_le_bytes());
+            out.extend_from_slice(&self.size.to_le_bytes());
+            out.extend_from_slice(&self.usage.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                device: Handle::from_raw(r.u64()?),
+                size: r.u64()?,
+                usage: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for [`vk_op::CREATE_BUFFER`](super::vk_op::CREATE_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateBufferResponse {
+        /// Handle naming the newly created buffer.
+        pub buffer: Handle,
+    }
+
+    impl CreateBufferResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.buffer.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                buffer: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`vk_op::BIND_BUFFER_MEMORY`](super::vk_op::BIND_BUFFER_MEMORY).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct BindBufferMemoryRequest {
+        /// Handle naming the buffer being bound.
+        pub buffer: Handle,
+        /// Handle naming the device memory bound to the buffer.
+        pub memory: Handle,
+        /// Offset into the memory at which the buffer is bound.
+        pub offset: u64,
+    }
+
+    impl BindBufferMemoryRequest {
+        /// Append the encoded body to `out`: a raw `u64` buffer handle, a raw
+        /// `u64` memory handle, then the `u64` bind offset.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.buffer.raw().to_le_bytes());
+            out.extend_from_slice(&self.memory.raw().to_le_bytes());
+            out.extend_from_slice(&self.offset.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                buffer: Handle::from_raw(r.u64()?),
+                memory: Handle::from_raw(r.u64()?),
+                offset: r.u64()?,
             })
         }
     }
@@ -1061,6 +1203,94 @@ mod tests {
         );
         assert_eq!(
             gl::GenBufferResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn vk_opcodes_memory_buffer_in_vulkan_namespace() {
+        assert_eq!(opcode_api(vk_op::ALLOCATE_MEMORY), ApiId::Vulkan as u8);
+        assert_eq!(opcode_api(vk_op::CREATE_BUFFER), ApiId::Vulkan as u8);
+        assert_eq!(opcode_api(vk_op::BIND_BUFFER_MEMORY), ApiId::Vulkan as u8);
+        assert_eq!(opcode_call(vk_op::ALLOCATE_MEMORY), 0x0010);
+        assert_eq!(opcode_call(vk_op::CREATE_BUFFER), 0x0011);
+        assert_eq!(opcode_call(vk_op::BIND_BUFFER_MEMORY), 0x0012);
+    }
+
+    #[test]
+    fn vk_allocate_memory_roundtrip() {
+        let req = vk::AllocateMemoryRequest {
+            device: Handle::new(3, 2, 4),
+            size: 0x1234_5678_9ABC_DEF0,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(vk::AllocateMemoryRequest::decode(&b).expect("req"), req);
+
+        let resp = vk::AllocateMemoryResponse {
+            memory: Handle::new(5, 7, 11),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::AllocateMemoryResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn vk_create_buffer_roundtrip() {
+        let req = vk::CreateBufferRequest {
+            device: Handle::new(3, 1, 9),
+            size: u64::MAX,
+            usage: 0xDEAD_BEEF,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 20);
+        assert_eq!(vk::CreateBufferRequest::decode(&b).expect("req"), req);
+
+        let resp = vk::CreateBufferResponse {
+            buffer: Handle::new(6, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::CreateBufferResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn vk_bind_buffer_memory_roundtrip() {
+        let req = vk::BindBufferMemoryRequest {
+            buffer: Handle::new(6, 3, 2),
+            memory: Handle::new(5, 4, 8),
+            offset: 0x0FED_CBA9_8765_4321,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 24);
+        assert_eq!(vk::BindBufferMemoryRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn vk_memory_buffer_bodies_reject_short_buffers() {
+        assert_eq!(
+            vk::AllocateMemoryRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::AllocateMemoryResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::CreateBufferRequest::decode(&[0u8; 19]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::CreateBufferResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::BindBufferMemoryRequest::decode(&[0u8; 23]),
             Err(ProtocolError::UnexpectedEof)
         );
     }

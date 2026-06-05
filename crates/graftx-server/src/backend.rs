@@ -20,6 +20,10 @@ const KIND_PHYSICAL_DEVICE: u8 = 2;
 const KIND_DEVICE: u8 = 3;
 /// Server object kind for a `VkQueue` handle.
 const KIND_QUEUE: u8 = 4;
+/// Server object kind for a `VkDeviceMemory` handle.
+const KIND_DEVICE_MEMORY: u8 = 5;
+/// Server object kind for a `VkBuffer` handle.
+const KIND_BUFFER: u8 = 6;
 
 /// A handler for one API namespace (one [`ApiId`](proto::ApiId)).
 ///
@@ -81,6 +85,37 @@ struct QueueState {
     index: u32,
 }
 
+/// Server-side state tracked for one allocated `VkDeviceMemory`.
+#[derive(Debug)]
+struct MemoryState {
+    /// The logical device this memory was allocated on. Recorded for
+    /// lifetime/ownership checks; read only by tests for now.
+    #[allow(dead_code)]
+    device: proto::Handle,
+    /// Size of the allocation in bytes.
+    #[allow(dead_code)]
+    size: u64,
+}
+
+/// Server-side state tracked for one created `VkBuffer`.
+#[derive(Debug)]
+struct BufferState {
+    /// The logical device this buffer was created on. Recorded for
+    /// lifetime/ownership checks; read only by tests for now.
+    #[allow(dead_code)]
+    device: proto::Handle,
+    /// Size of the buffer in bytes.
+    #[allow(dead_code)]
+    size: u64,
+    /// Buffer usage flag bits.
+    #[allow(dead_code)]
+    usage: u32,
+    /// The memory binding for this buffer, if one has been recorded: the bound
+    /// memory handle and the offset into it. `None` until `BIND_BUFFER_MEMORY`
+    /// succeeds; a second bind is rejected.
+    bound: Option<(proto::Handle, u64)>,
+}
+
 /// Pure-Rust Vulkan backend stub.
 ///
 /// Owns generational handle tables for the Vulkan objects it tracks. It answers
@@ -99,6 +134,8 @@ pub struct VulkanBackend {
     physical_devices: HandleTable<PhysDevState>,
     devices: HandleTable<DeviceState>,
     queues: HandleTable<QueueState>,
+    memories: HandleTable<MemoryState>,
+    buffers: HandleTable<BufferState>,
 }
 
 impl VulkanBackend {
@@ -110,6 +147,8 @@ impl VulkanBackend {
             physical_devices: HandleTable::new(),
             devices: HandleTable::new(),
             queues: HandleTable::new(),
+            memories: HandleTable::new(),
+            buffers: HandleTable::new(),
         }
     }
 }
@@ -198,6 +237,58 @@ impl Backend for VulkanBackend {
                 proto::vk::GetDeviceQueueResponse { queue }.encode(&mut out);
                 Ok(out)
             }
+            proto::vk_op::ALLOCATE_MEMORY => {
+                let req = proto::vk::AllocateMemoryRequest::decode(body)?;
+                // The logical device must have been created on this backend.
+                if self.devices.get(req.device).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                let memory = self.memories.insert(
+                    KIND_DEVICE_MEMORY,
+                    MemoryState {
+                        device: req.device,
+                        size: req.size,
+                    },
+                );
+                let mut out = Vec::new();
+                proto::vk::AllocateMemoryResponse { memory }.encode(&mut out);
+                Ok(out)
+            }
+            proto::vk_op::CREATE_BUFFER => {
+                let req = proto::vk::CreateBufferRequest::decode(body)?;
+                // The logical device must have been created on this backend.
+                if self.devices.get(req.device).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                let buffer = self.buffers.insert(
+                    KIND_BUFFER,
+                    BufferState {
+                        device: req.device,
+                        size: req.size,
+                        usage: req.usage,
+                        bound: None,
+                    },
+                );
+                let mut out = Vec::new();
+                proto::vk::CreateBufferResponse { buffer }.encode(&mut out);
+                Ok(out)
+            }
+            proto::vk_op::BIND_BUFFER_MEMORY => {
+                let req = proto::vk::BindBufferMemoryRequest::decode(body)?;
+                // The memory must have been allocated on this backend.
+                if self.memories.get(req.memory).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                // The buffer must exist and not already be bound; a re-bind is
+                // rejected.
+                let state = self
+                    .buffers
+                    .get_mut(req.buffer)
+                    .filter(|state| state.bound.is_none())
+                    .ok_or(proto::ProtocolError::UnknownOpcode(opcode))?;
+                state.bound = Some((req.memory, req.offset));
+                Ok(Vec::new())
+            }
             // Everything else in the Vulkan namespace is not implemented yet.
             other => Err(proto::ProtocolError::UnknownOpcode(other)),
         }
@@ -245,6 +336,41 @@ mod tests {
         body
     }
 
+    /// Encode an `ALLOCATE_MEMORY` request body.
+    fn allocate_memory_body(device: proto::Handle, size: u64) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::AllocateMemoryRequest { device, size }.encode(&mut body);
+        body
+    }
+
+    /// Encode a `CREATE_BUFFER` request body.
+    fn create_buffer_body(device: proto::Handle, size: u64, usage: u32) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::CreateBufferRequest {
+            device,
+            size,
+            usage,
+        }
+        .encode(&mut body);
+        body
+    }
+
+    /// Encode a `BIND_BUFFER_MEMORY` request body.
+    fn bind_buffer_memory_body(
+        buffer: proto::Handle,
+        memory: proto::Handle,
+        offset: u64,
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::BindBufferMemoryRequest {
+            buffer,
+            memory,
+            offset,
+        }
+        .encode(&mut body);
+        body
+    }
+
     /// Drive a backend through `CREATE_INSTANCE` then `ENUMERATE_PHYSICAL_DEVICES`,
     /// returning the minted physical-device handle.
     fn enumerate_one(backend: &mut VulkanBackend) -> proto::Handle {
@@ -264,6 +390,22 @@ mod tests {
         proto::vk::EnumeratePhysicalDevicesResponse::decode(&enum_resp)
             .expect("decode enumerate response")
             .devices[0]
+    }
+
+    /// Drive a backend up through `CREATE_DEVICE`, returning the minted logical
+    /// device handle.
+    fn create_device_one(backend: &mut VulkanBackend) -> proto::Handle {
+        let physical_device = enumerate_one(backend);
+        let create_resp = backend
+            .handle(
+                proto::vk_op::CREATE_DEVICE,
+                3,
+                &create_device_body(physical_device),
+            )
+            .expect("create device should succeed");
+        proto::vk::CreateDeviceResponse::decode(&create_resp)
+            .expect("decode create device response")
+            .device
     }
 
     #[test]
@@ -433,5 +575,234 @@ mod tests {
             )
             .expect_err("get device queue with bogus device must error");
         assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn allocate_memory_after_create_device_returns_memory_handle() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+
+        let resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_MEMORY,
+                5,
+                &allocate_memory_body(device, 4096),
+            )
+            .expect("allocate memory should succeed");
+
+        let decoded = proto::vk::AllocateMemoryResponse::decode(&resp).expect("decode response");
+        assert_eq!(decoded.memory.kind(), KIND_DEVICE_MEMORY);
+        let state = backend
+            .memories
+            .get(decoded.memory)
+            .expect("memory state present");
+        assert_eq!(state.device.raw(), device.raw());
+        assert_eq!(state.size, 4096);
+    }
+
+    #[test]
+    fn allocate_memory_with_bogus_device_errors() {
+        let mut backend = VulkanBackend::new();
+        // A handle that was never created by this backend.
+        let bogus = proto::Handle::new(KIND_DEVICE, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::ALLOCATE_MEMORY,
+                1,
+                &allocate_memory_body(bogus, 4096),
+            )
+            .expect_err("allocate memory with bogus device must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn create_buffer_after_create_device_returns_buffer_handle() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+
+        let resp = backend
+            .handle(
+                proto::vk_op::CREATE_BUFFER,
+                6,
+                &create_buffer_body(device, 1024, 0x20),
+            )
+            .expect("create buffer should succeed");
+
+        let decoded = proto::vk::CreateBufferResponse::decode(&resp).expect("decode response");
+        assert_eq!(decoded.buffer.kind(), KIND_BUFFER);
+        let state = backend
+            .buffers
+            .get(decoded.buffer)
+            .expect("buffer state present");
+        assert_eq!(state.device.raw(), device.raw());
+        assert_eq!(state.size, 1024);
+        assert_eq!(state.usage, 0x20);
+        assert!(state.bound.is_none());
+    }
+
+    #[test]
+    fn create_buffer_with_bogus_device_errors() {
+        let mut backend = VulkanBackend::new();
+        // A handle that was never created by this backend.
+        let bogus = proto::Handle::new(KIND_DEVICE, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::CREATE_BUFFER,
+                1,
+                &create_buffer_body(bogus, 1024, 0),
+            )
+            .expect_err("create buffer with bogus device must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn bind_buffer_memory_succeeds_and_records_binding() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+
+        let mem_resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_MEMORY,
+                5,
+                &allocate_memory_body(device, 4096),
+            )
+            .expect("allocate memory should succeed");
+        let memory = proto::vk::AllocateMemoryResponse::decode(&mem_resp)
+            .expect("decode memory response")
+            .memory;
+
+        let buf_resp = backend
+            .handle(
+                proto::vk_op::CREATE_BUFFER,
+                6,
+                &create_buffer_body(device, 1024, 0x20),
+            )
+            .expect("create buffer should succeed");
+        let buffer = proto::vk::CreateBufferResponse::decode(&buf_resp)
+            .expect("decode buffer response")
+            .buffer;
+
+        let ack = backend
+            .handle(
+                proto::vk_op::BIND_BUFFER_MEMORY,
+                7,
+                &bind_buffer_memory_body(buffer, memory, 256),
+            )
+            .expect("bind buffer memory should succeed");
+        // The reply is an empty ack body.
+        assert!(ack.is_empty());
+
+        let state = backend.buffers.get(buffer).expect("buffer state present");
+        let (bound_memory, offset) = state.bound.expect("binding recorded");
+        assert_eq!(bound_memory.raw(), memory.raw());
+        assert_eq!(offset, 256);
+    }
+
+    #[test]
+    fn bind_buffer_memory_with_bogus_buffer_errors() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+
+        let mem_resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_MEMORY,
+                5,
+                &allocate_memory_body(device, 4096),
+            )
+            .expect("allocate memory should succeed");
+        let memory = proto::vk::AllocateMemoryResponse::decode(&mem_resp)
+            .expect("decode memory response")
+            .memory;
+
+        // A buffer handle that was never minted by this backend.
+        let bogus_buffer = proto::Handle::new(KIND_BUFFER, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::BIND_BUFFER_MEMORY,
+                7,
+                &bind_buffer_memory_body(bogus_buffer, memory, 0),
+            )
+            .expect_err("bind with bogus buffer must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn bind_buffer_memory_with_bogus_memory_errors() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+
+        let buf_resp = backend
+            .handle(
+                proto::vk_op::CREATE_BUFFER,
+                6,
+                &create_buffer_body(device, 1024, 0),
+            )
+            .expect("create buffer should succeed");
+        let buffer = proto::vk::CreateBufferResponse::decode(&buf_resp)
+            .expect("decode buffer response")
+            .buffer;
+
+        // A memory handle that was never allocated by this backend.
+        let bogus_memory = proto::Handle::new(KIND_DEVICE_MEMORY, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::BIND_BUFFER_MEMORY,
+                7,
+                &bind_buffer_memory_body(buffer, bogus_memory, 0),
+            )
+            .expect_err("bind with bogus memory must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+        // The failed bind must not have recorded a binding.
+        let state = backend.buffers.get(buffer).expect("buffer state present");
+        assert!(state.bound.is_none());
+    }
+
+    #[test]
+    fn re_bind_buffer_memory_errors() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+
+        let mem_resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_MEMORY,
+                5,
+                &allocate_memory_body(device, 4096),
+            )
+            .expect("allocate memory should succeed");
+        let memory = proto::vk::AllocateMemoryResponse::decode(&mem_resp)
+            .expect("decode memory response")
+            .memory;
+
+        let buf_resp = backend
+            .handle(
+                proto::vk_op::CREATE_BUFFER,
+                6,
+                &create_buffer_body(device, 1024, 0),
+            )
+            .expect("create buffer should succeed");
+        let buffer = proto::vk::CreateBufferResponse::decode(&buf_resp)
+            .expect("decode buffer response")
+            .buffer;
+
+        backend
+            .handle(
+                proto::vk_op::BIND_BUFFER_MEMORY,
+                7,
+                &bind_buffer_memory_body(buffer, memory, 0),
+            )
+            .expect("first bind should succeed");
+
+        let err = backend
+            .handle(
+                proto::vk_op::BIND_BUFFER_MEMORY,
+                8,
+                &bind_buffer_memory_body(buffer, memory, 512),
+            )
+            .expect_err("re-bind must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+        // The original binding must be untouched.
+        let state = backend.buffers.get(buffer).expect("buffer state present");
+        let (_, offset) = state.bound.expect("original binding intact");
+        assert_eq!(offset, 0);
     }
 }

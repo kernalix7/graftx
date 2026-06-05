@@ -17,6 +17,10 @@ const KIND_PHYSICAL_DEVICE: u8 = 2;
 const KIND_DEVICE: u8 = 3;
 /// Server object kind for a `VkQueue` handle.
 const KIND_QUEUE: u8 = 4;
+/// Server object kind for a `VkDeviceMemory` handle.
+const KIND_DEVICE_MEMORY: u8 = 5;
+/// Server object kind for a `VkBuffer` handle.
+const KIND_BUFFER: u8 = 6;
 
 /// Issue `vkCreateInstance` and return the new instance [`Handle`](proto::Handle).
 ///
@@ -201,4 +205,142 @@ pub fn get_device_queue<T: Transport>(
         )));
     }
     Ok(resp.queue)
+}
+
+/// Issue `vkAllocateMemory` and return the new device-memory [`Handle`](proto::Handle).
+///
+/// Sends an [`ALLOCATE_MEMORY`](proto::vk_op::ALLOCATE_MEMORY) request carrying an
+/// [`AllocateMemoryRequest`](proto::vk::AllocateMemoryRequest) naming `device` and
+/// the allocation `size`, awaits the correlated response, validates its opcode and
+/// kind, decodes the [`AllocateMemoryResponse`](proto::vk::AllocateMemoryResponse),
+/// and verifies the returned handle names a `VkDeviceMemory`.
+pub fn allocate_memory<T: Transport>(
+    t: &mut T,
+    device: proto::Handle,
+    size: u64,
+    req_id: u32,
+    seq: u64,
+) -> Result<proto::Handle, ClientError> {
+    let mut body = Vec::new();
+    proto::vk::AllocateMemoryRequest { device, size }.encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::ALLOCATE_MEMORY,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::ALLOCATE_MEMORY || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    let resp = proto::vk::AllocateMemoryResponse::decode(b)?;
+    if resp.memory.kind() != KIND_DEVICE_MEMORY {
+        return Err(ClientError::Protocol(proto::ProtocolError::BadKind(
+            resp.memory.kind() as u16,
+        )));
+    }
+    Ok(resp.memory)
+}
+
+/// Issue `vkCreateBuffer` and return the new buffer [`Handle`](proto::Handle).
+///
+/// Sends a [`CREATE_BUFFER`](proto::vk_op::CREATE_BUFFER) request carrying a
+/// [`CreateBufferRequest`](proto::vk::CreateBufferRequest) naming `device`, the
+/// buffer `size`, and `usage` flags, awaits the correlated response, validates its
+/// opcode and kind, decodes the
+/// [`CreateBufferResponse`](proto::vk::CreateBufferResponse), and verifies the
+/// returned handle names a `VkBuffer`.
+pub fn create_buffer<T: Transport>(
+    t: &mut T,
+    device: proto::Handle,
+    size: u64,
+    usage: u32,
+    req_id: u32,
+    seq: u64,
+) -> Result<proto::Handle, ClientError> {
+    let mut body = Vec::new();
+    proto::vk::CreateBufferRequest {
+        device,
+        size,
+        usage,
+    }
+    .encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::CREATE_BUFFER,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::CREATE_BUFFER || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    let resp = proto::vk::CreateBufferResponse::decode(b)?;
+    if resp.buffer.kind() != KIND_BUFFER {
+        return Err(ClientError::Protocol(proto::ProtocolError::BadKind(
+            resp.buffer.kind() as u16,
+        )));
+    }
+    Ok(resp.buffer)
+}
+
+/// Issue `vkBindBufferMemory`, binding `memory` to `buffer` at `offset`.
+///
+/// Sends a [`BIND_BUFFER_MEMORY`](proto::vk_op::BIND_BUFFER_MEMORY) request
+/// carrying a [`BindBufferMemoryRequest`](proto::vk::BindBufferMemoryRequest),
+/// awaits the correlated response, and validates its opcode and kind. The reply
+/// body is an empty acknowledgement, so nothing is decoded.
+pub fn bind_buffer_memory<T: Transport>(
+    t: &mut T,
+    buffer: proto::Handle,
+    memory: proto::Handle,
+    offset: u64,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::vk::BindBufferMemoryRequest {
+        buffer,
+        memory,
+        offset,
+    }
+    .encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::BIND_BUFFER_MEMORY,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::BIND_BUFFER_MEMORY || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
 }
