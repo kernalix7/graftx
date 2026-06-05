@@ -9,6 +9,7 @@ members = [
     "crates/graftx-obs",
     "crates/graftx-cli",
     "crates/graftx-xtask",
+    "crates/graftx-bench",
 ]
 
 [workspace.package]

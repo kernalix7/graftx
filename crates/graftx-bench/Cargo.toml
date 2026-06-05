@@ -1,0 +1,17 @@
+[package]
+name = "graftx-bench"
+description = "GraftX protocol codec micro-benchmark: times encode/decode round-trips."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "graftx-bench"
+path = "src/main.rs"
+
+[dependencies]
+graftx-protocol.workspace = true
+graftx-obs.workspace = true
