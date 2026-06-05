@@ -1,7 +1,9 @@
 //! Opcode-table source of truth and Markdown renderer.
 //!
 //! The entries here mirror the opcode constants defined in `graftx-protocol`
-//! (`core_op::*` and `vk_op::*`). They are duplicated rather than imported so
+//! (`core_op::*`, `vk_op::*`, `gl_op::*`, `cuda_op::*`, `cl_op::*`, `hip_op::*`,
+//! `l0_op::*`, `video_op::*`, and `wgpu_op::*`). They are duplicated rather than
+//! imported so
 //! that `gen-opcodes` stays a leaf tool with no dependency on the protocol
 //! crate; the `check-xrefs` companion is responsible for catching drift.
 //!
@@ -33,8 +35,8 @@ impl OpcodeEntry {
 }
 
 /// The canonical opcode list, in the order it should appear in the table:
-/// Core opcodes first, then Vulkan, OpenGL, and CUDA, each in ascending
-/// call-id order within its API.
+/// Core opcodes first, then Vulkan, OpenGL, CUDA, OpenCL, HIP, Level Zero,
+/// Video, and WebGPU, each in ascending call-id order within its API.
 pub const OPCODES: &[OpcodeEntry] = &[
     OpcodeEntry {
         api_name: "Core",
@@ -154,6 +156,96 @@ pub const OPCODES: &[OpcodeEntry] = &[
         api_name: "Cuda",
         api_id: 0x03,
         name: "MEM_FREE",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "OpenCl",
+        api_id: 0x04,
+        name: "CREATE_CONTEXT",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "OpenCl",
+        api_id: 0x04,
+        name: "CREATE_BUFFER",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "OpenCl",
+        api_id: 0x04,
+        name: "RELEASE_BUFFER",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "Hip",
+        api_id: 0x05,
+        name: "MALLOC",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "Hip",
+        api_id: 0x05,
+        name: "FREE",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "Hip",
+        api_id: 0x05,
+        name: "STREAM_CREATE",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "LevelZero",
+        api_id: 0x06,
+        name: "CONTEXT_CREATE",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "LevelZero",
+        api_id: 0x06,
+        name: "MEM_ALLOC_DEVICE",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "LevelZero",
+        api_id: 0x06,
+        name: "MEM_FREE",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "Video",
+        api_id: 0x07,
+        name: "CREATE_DECODE_SESSION",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "Video",
+        api_id: 0x07,
+        name: "DECODE_FRAME",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "Video",
+        api_id: 0x07,
+        name: "DESTROY_SESSION",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "WebGpu",
+        api_id: 0x08,
+        name: "REQUEST_DEVICE",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "WebGpu",
+        api_id: 0x08,
+        name: "CREATE_BUFFER",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "WebGpu",
+        api_id: 0x08,
+        name: "DESTROY_BUFFER",
         call_id: 0x0003,
     },
 ];
@@ -394,7 +486,7 @@ mod tests {
         // entry).
         let data_rows = table.lines().count() - 2;
         assert_eq!(data_rows, OPCODES.len());
-        assert_eq!(data_rows, 20);
+        assert_eq!(data_rows, 35);
     }
 
     #[test]
@@ -454,10 +546,24 @@ mod tests {
         let vulkan = table.find("| Vulkan |").expect("Vulkan row present");
         let opengl = table.find("| OpenGl |").expect("OpenGl row present");
         let cuda = table.find("| Cuda |").expect("Cuda row present");
+        let opencl = table.find("| OpenCl |").expect("OpenCl row present");
+        let hip = table.find("| Hip |").expect("Hip row present");
+        let level_zero = table.find("| LevelZero |").expect("LevelZero row present");
+        let video = table.find("| Video |").expect("Video row present");
+        let webgpu = table.find("| WebGpu |").expect("WebGpu row present");
         let total = table.find("| TOTAL |").expect("TOTAL row present");
         assert!(
-            core < vulkan && vulkan < opengl && opengl < cuda && cuda < total,
-            "rows should be ordered Core, Vulkan, OpenGl, Cuda, TOTAL:\n{table}"
+            core < vulkan
+                && vulkan < opengl
+                && opengl < cuda
+                && cuda < opencl
+                && opencl < hip
+                && hip < level_zero
+                && level_zero < video
+                && video < webgpu
+                && webgpu < total,
+            "rows should be ordered by api_id (Core, Vulkan, OpenGl, Cuda, \
+             OpenCl, Hip, LevelZero, Video, WebGpu, TOTAL):\n{table}"
         );
     }
 
@@ -484,6 +590,14 @@ mod tests {
         assert!(*counts.get("Vulkan").unwrap_or(&0) >= 11, "Vulkan opcodes");
         assert!(*counts.get("OpenGl").unwrap_or(&0) >= 3, "OpenGl opcodes");
         assert!(*counts.get("Cuda").unwrap_or(&0) >= 3, "Cuda opcodes");
+        assert!(*counts.get("OpenCl").unwrap_or(&0) >= 3, "OpenCl opcodes");
+        assert!(*counts.get("Hip").unwrap_or(&0) >= 3, "Hip opcodes");
+        assert!(
+            *counts.get("LevelZero").unwrap_or(&0) >= 3,
+            "LevelZero opcodes"
+        );
+        assert!(*counts.get("Video").unwrap_or(&0) >= 3, "Video opcodes");
+        assert!(*counts.get("WebGpu").unwrap_or(&0) >= 3, "WebGpu opcodes");
     }
 
     #[test]
@@ -523,8 +637,9 @@ mod tests {
             "total should equal the opcode count ({}):\n{stats}",
             OPCODES.len()
         );
-        // Core, Vulkan, OpenGl, Cuda — four distinct APIs in the canonical list.
-        assert!(stats.contains("- Distinct APIs: 4"), "stats:\n{stats}");
+        // Core, Vulkan, OpenGl, Cuda, OpenCl, Hip, LevelZero, Video, WebGpu —
+        // nine distinct APIs in the canonical list.
+        assert!(stats.contains("- Distinct APIs: 9"), "stats:\n{stats}");
     }
 
     #[test]
