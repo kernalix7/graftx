@@ -194,6 +194,35 @@ impl<T> HandleTable<T> {
             .count()
     }
 
+    /// Whether `h` currently resolves to a live entry.
+    ///
+    /// Applies the same validation as [`get`](Self::get): the slot index must be
+    /// in range, the slot must hold a value, and the handle's generation must
+    /// match the slot's. Returns `false` for an out-of-range, empty, retired, or
+    /// stale (post-reuse) handle.
+    #[must_use]
+    pub fn is_live(&self, h: Handle) -> bool {
+        self.get(h).is_some()
+    }
+
+    /// The sorted, de-duplicated `kind` bytes present among live entries.
+    ///
+    /// Empty and retired slots contribute no kind. The returned vector is sorted
+    /// ascending and contains each live kind at most once; it is empty when the
+    /// table holds no live entries.
+    #[must_use]
+    pub fn kinds(&self) -> Vec<u8> {
+        let mut kinds: Vec<u8> = self
+            .slots
+            .iter()
+            .filter(|slot| slot.value.is_some())
+            .map(|slot| slot.kind)
+            .collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        kinds
+    }
+
     /// The total number of storage slots allocated by the table.
     ///
     /// This counts every slot — live, free, and retired — and so never shrinks
@@ -469,6 +498,50 @@ mod tests {
         // A kind that was never inserted has no live entries.
         assert_eq!(table.count_by_kind(KIND_B), 0);
         assert_eq!(table.count_by_kind(KIND_A), 1);
+    }
+
+    #[test]
+    fn is_live_tracks_handle_validity() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+
+        // A fresh handle is live.
+        let h = table.insert(KIND, 1);
+        assert!(table.is_live(h));
+
+        // After removal the handle is no longer live.
+        assert_eq!(table.remove(h), Some(1));
+        assert!(!table.is_live(h));
+
+        // The freed slot is reused under a bumped generation; the old (stale)
+        // handle stays dead while the fresh one is live.
+        let fresh = table.insert(KIND, 2);
+        assert_eq!(fresh.slot(), h.slot());
+        assert_ne!(fresh.generation(), h.generation());
+        assert!(!table.is_live(h));
+        assert!(table.is_live(fresh));
+    }
+
+    #[test]
+    fn kinds_returns_distinct_sorted_live_kinds() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        assert!(table.kinds().is_empty());
+
+        // Insert two distinct kinds, with KIND_B duplicated across two slots.
+        // KIND_A (0x11) sorts before KIND_B (0x22), so the result is ascending.
+        let a = table.insert(KIND_A, 1);
+        let _b1 = table.insert(KIND_B, 2);
+        let _b2 = table.insert(KIND_B, 3);
+        assert_eq!(table.kinds(), vec![KIND_A, KIND_B]);
+
+        // Removing the sole KIND_A entry drops that kind from the list.
+        assert_eq!(table.remove(a), Some(1));
+        assert_eq!(table.kinds(), vec![KIND_B]);
+
+        // The remaining KIND_B entries keep the kind present until both are gone.
+        assert_eq!(table.remove(_b1), Some(2));
+        assert_eq!(table.kinds(), vec![KIND_B]);
+        assert_eq!(table.remove(_b2), Some(3));
+        assert!(table.kinds().is_empty());
     }
 
     #[test]
