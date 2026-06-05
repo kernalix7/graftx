@@ -7,6 +7,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod backend;
+pub mod cl_backend;
 pub mod cuda_backend;
 pub mod gl_backend;
 pub mod hip_backend;
@@ -14,6 +15,7 @@ pub mod serve;
 pub mod session;
 
 pub use backend::{Backend, VulkanBackend};
+pub use cl_backend::ClBackend;
 pub use cuda_backend::CudaBackend;
 pub use gl_backend::GlBackend;
 pub use hip_backend::HipBackend;
