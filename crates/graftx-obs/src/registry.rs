@@ -13,9 +13,35 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use crate::CallStats;
+
+/// Backing storage for the process-global [`ObsRegistry`].
+///
+/// Initialized on first access by [`global`]; see that function for why a
+/// single shared registry is the intended default for most callers.
+static GLOBAL: OnceLock<ObsRegistry> = OnceLock::new();
+
+/// Return the process-global default [`ObsRegistry`].
+///
+/// The registry is created lazily on first call and lives for the rest of the
+/// process; every later call returns a reference to that same instance, so
+/// callers can record statistics from anywhere without threading a handle
+/// through their own APIs. [`ObsRegistry`] is `Send + Sync` (its state lives
+/// behind a [`Mutex`]), so the shared reference is safe to use from any thread.
+pub fn global() -> &'static ObsRegistry {
+    GLOBAL.get_or_init(ObsRegistry::new)
+}
+
+/// Record a single call against the process-global registry.
+///
+/// Convenience wrapper over [`global().record`](ObsRegistry::record) for the
+/// common case where callers use the shared default registry rather than their
+/// own instance.
+pub fn record(api: &'static str, bytes_out: u64, bytes_in: u64) {
+    global().record(api, bytes_out, bytes_in);
+}
 
 /// A thread-safe collection of [`CallStats`] keyed by API name.
 ///
@@ -281,5 +307,53 @@ mod tests {
             }
         );
         assert_eq!(registry.total().calls, 2);
+    }
+
+    #[test]
+    fn global_returns_a_stable_reference() {
+        let first = global();
+        let second = global();
+        assert!(
+            std::ptr::eq(first, second),
+            "global() should return the same instance on every call"
+        );
+    }
+
+    #[test]
+    fn record_updates_the_global_registry() {
+        // The global registry is shared across tests, so key off an API name
+        // unique to this test and assert only on that row rather than totals.
+        const API: &str = "global_test::record_updates_the_global_registry";
+
+        record(API, 10, 20);
+        record(API, 5, 7);
+
+        assert_eq!(
+            global().snapshot()[API],
+            CallStats {
+                calls: 2,
+                bytes_out: 15,
+                bytes_in: 27,
+            }
+        );
+    }
+
+    #[test]
+    fn record_and_global_record_target_the_same_registry() {
+        // Unique per-test API name keeps this independent of other tests'
+        // writes to the shared global registry.
+        const API: &str = "global_test::record_and_global_record_target_the_same_registry";
+
+        record(API, 1, 2);
+        global().record(API, 3, 4);
+
+        assert_eq!(
+            global().snapshot()[API],
+            CallStats {
+                calls: 2,
+                bytes_out: 4,
+                bytes_in: 6,
+            }
+        );
     }
 }
