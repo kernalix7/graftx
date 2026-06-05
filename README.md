@@ -36,7 +36,7 @@ cargo clippy --all-targets -- -D warnings</code></pre>
 ---
 
 > ### Status: Early development
-> GraftX is at **v0.0.0** — the Cargo workspace and its four crates (`graftx-protocol`, `graftx-transport`, `graftx-client`, `graftx-server`) are scaffolded, but the wire protocol, transport, and API backends are **not yet implemented or stable**. Nothing here is production-ready. The first milestone is a Vulkan round-trip over the transport; see the [roadmap](docs/design/ROADMAP.md). Please file issues at <https://github.com/kernalix7/graftx/issues>.
+> GraftX is at **v0.0.0** and **pre-stable** — none of the wire protocol, transport, or APIs are frozen. The Cargo workspace spans several crates (`graftx-protocol`, `graftx-handles`, `graftx-transport`, `graftx-client`, `graftx-server`, plus tooling), and the remoting path now runs end-to-end over a real TCP serve loop: a client encodes calls, the server decodes, validates, and dispatches them, and results flow back. Eleven GPU-API backends — Vulkan, OpenGL, CUDA, OpenCL, HIP, Level Zero, Video, WebGPU, OptiX, SYCL, AMF — are wired into that path, but they are **pure-Rust stubs**: they track object lifetimes in generational handle tables and make **no native driver, GPU, or FFI calls** yet. Nothing here is production-ready. See the [roadmap](docs/design/ROADMAP.md). Please file issues at <https://github.com/kernalix7/graftx/issues>.
 
 In many virtualization setups a single GPU is handed to **one** VM through PCI passthrough — usually a Windows guest, where vendor drivers and tooling are best supported. Other guests on the same host are left without acceleration.
 
@@ -92,7 +92,7 @@ cargo clippy --all-targets -- -D warnings   # lint
 cargo fmt --check                # format check
 ```
 
-The workspace splits into four crates under `crates/` — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The workspace splits into several crates under `crates/` — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Documentation
 
@@ -102,6 +102,9 @@ The workspace splits into four crates under `crates/` — see [docs/ARCHITECTURE
 | Architecture | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | [ARCHITECTURE.ko.md](docs/ARCHITECTURE.ko.md) |
 | Comparison vs. prior art | [COMPARISON.md](docs/COMPARISON.md) | [COMPARISON.ko.md](docs/COMPARISON.ko.md) |
 | README | — | [README.ko.md](docs/README.ko.md) |
+| Wire-protocol reference | [PROTOCOL.md](docs/design/PROTOCOL.md) | — |
+| Backend status matrix | [BACKENDS.md](docs/design/BACKENDS.md) | — |
+| Security model | [SECURITY_MODEL.md](docs/design/SECURITY_MODEL.md) | — |
 
 Engineering / design notes live under [docs/design/](docs/design/).
 

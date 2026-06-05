@@ -36,7 +36,7 @@ cargo clippy --all-targets -- -D warnings</code></pre>
 ---
 
 > ### Status: Early development
-> GraftX는 **v0.0.0** 단계입니다 — Cargo workspace와 네 개의 crate(`graftx-protocol`, `graftx-transport`, `graftx-client`, `graftx-server`)는 골격이 잡혀 있지만, wire 프로토콜, transport, API 백엔드는 **아직 구현되지 않았거나 안정화되지 않았습니다**. 여기 있는 어떤 것도 프로덕션에 사용할 수 없습니다. 첫 번째 마일스톤은 transport를 통한 Vulkan 왕복(round-trip)입니다. [로드맵](design/ROADMAP.md)을 참고하세요. 이슈는 <https://github.com/kernalix7/graftx/issues>에 등록해 주세요.
+> GraftX는 **v0.0.0**이며 **안정화 이전(pre-stable)** 단계입니다 — wire 프로토콜, transport, API 중 무엇도 아직 고정되지 않았습니다. Cargo workspace는 여러 crate(`graftx-protocol`, `graftx-handles`, `graftx-transport`, `graftx-client`, `graftx-server` 및 도구 crate)로 구성되며, 리모팅 경로는 이제 실제 TCP serve 루프 위에서 종단 간(end-to-end)으로 동작합니다 — 클라이언트가 호출을 인코딩하면 서버가 디코딩·검증·디스패치하고 결과가 되돌아옵니다. Vulkan, OpenGL, CUDA, OpenCL, HIP, Level Zero, Video, WebGPU, OptiX, SYCL, AMF 등 11개의 GPU API 백엔드가 이 경로에 연결되어 있지만, 모두 **순수 Rust 스텁(stub)**입니다 — 세대(generational) 핸들 테이블로 객체 수명만 추적할 뿐, 아직 **네이티브 드라이버 / GPU / FFI 호출은 하지 않습니다**. 여기 있는 어떤 것도 프로덕션에 사용할 수 없습니다. [로드맵](design/ROADMAP.md)을 참고하세요. 이슈는 <https://github.com/kernalix7/graftx/issues>에 등록해 주세요.
 
 많은 가상화 환경에서는 단일 GPU가 PCI passthrough를 통해 **하나의** VM에만 전달됩니다 — 보통 벤더 드라이버와 도구 지원이 가장 좋은 Windows 게스트입니다. 같은 호스트의 다른 게스트들은 가속 없이 남겨집니다.
 
@@ -92,7 +92,7 @@ cargo clippy --all-targets -- -D warnings   # lint
 cargo fmt --check                # format check
 ```
 
-workspace는 `crates/` 아래 네 개의 crate로 나뉩니다 — [ARCHITECTURE.ko.md](ARCHITECTURE.ko.md)를 참고하세요.
+workspace는 `crates/` 아래 여러 crate로 나뉩니다 — [ARCHITECTURE.ko.md](ARCHITECTURE.ko.md)를 참고하세요.
 
 ## Documentation
 
@@ -102,6 +102,9 @@ workspace는 `crates/` 아래 네 개의 crate로 나뉩니다 — [ARCHITECTURE
 | 아키텍처 | [ARCHITECTURE.md](ARCHITECTURE.md) | [ARCHITECTURE.ko.md](ARCHITECTURE.ko.md) |
 | 기존 기술과의 비교 | [COMPARISON.md](COMPARISON.md) | [COMPARISON.ko.md](COMPARISON.ko.md) |
 | README | — | [README.ko.md](README.ko.md) |
+| Wire 프로토콜 레퍼런스 | [PROTOCOL.md](design/PROTOCOL.md) | — |
+| 백엔드 상태 매트릭스 | [BACKENDS.md](design/BACKENDS.md) | — |
+| 보안 모델 | [SECURITY_MODEL.md](design/SECURITY_MODEL.md) | — |
 
 엔지니어링 / 설계 노트는 [design/](design/) 아래에 있습니다.
 
