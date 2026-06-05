@@ -24,6 +24,10 @@ const KIND_QUEUE: u8 = 4;
 const KIND_DEVICE_MEMORY: u8 = 5;
 /// Server object kind for a `VkBuffer` handle.
 const KIND_BUFFER: u8 = 6;
+/// Server object kind for a `VkCommandPool` handle.
+const KIND_COMMAND_POOL: u8 = 7;
+/// Server object kind for a `VkCommandBuffer` handle.
+const KIND_COMMAND_BUFFER: u8 = 8;
 
 /// A handler for one API namespace (one [`ApiId`](proto::ApiId)).
 ///
@@ -116,6 +120,27 @@ struct BufferState {
     bound: Option<(proto::Handle, u64)>,
 }
 
+/// Server-side state tracked for one created `VkCommandPool`.
+#[derive(Debug)]
+struct CommandPoolState {
+    /// The logical device this command pool was created on. Recorded for
+    /// lifetime/ownership checks; read only by tests for now.
+    #[allow(dead_code)]
+    device: proto::Handle,
+    /// Index of the queue family this pool's buffers are submitted to.
+    #[allow(dead_code)]
+    queue_family_index: u32,
+}
+
+/// Server-side state tracked for one allocated `VkCommandBuffer`.
+#[derive(Debug)]
+struct CommandBufferState {
+    /// The command pool this buffer was allocated from. Recorded for
+    /// lifetime/ownership checks; read only by tests for now.
+    #[allow(dead_code)]
+    pool: proto::Handle,
+}
+
 /// Pure-Rust Vulkan backend stub.
 ///
 /// Owns generational handle tables for the Vulkan objects it tracks. It answers
@@ -136,6 +161,8 @@ pub struct VulkanBackend {
     queues: HandleTable<QueueState>,
     memories: HandleTable<MemoryState>,
     buffers: HandleTable<BufferState>,
+    command_pools: HandleTable<CommandPoolState>,
+    command_buffers: HandleTable<CommandBufferState>,
 }
 
 impl VulkanBackend {
@@ -149,6 +176,8 @@ impl VulkanBackend {
             queues: HandleTable::new(),
             memories: HandleTable::new(),
             buffers: HandleTable::new(),
+            command_pools: HandleTable::new(),
+            command_buffers: HandleTable::new(),
         }
     }
 }
@@ -289,6 +318,47 @@ impl Backend for VulkanBackend {
                 state.bound = Some((req.memory, req.offset));
                 Ok(Vec::new())
             }
+            proto::vk_op::CREATE_COMMAND_POOL => {
+                let req = proto::vk::CreateCommandPoolRequest::decode(body)?;
+                // The logical device must have been created on this backend.
+                if self.devices.get(req.device).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                let pool = self.command_pools.insert(
+                    KIND_COMMAND_POOL,
+                    CommandPoolState {
+                        device: req.device,
+                        queue_family_index: req.queue_family_index,
+                    },
+                );
+                let mut out = Vec::new();
+                proto::vk::CreateCommandPoolResponse { pool }.encode(&mut out);
+                Ok(out)
+            }
+            proto::vk_op::ALLOCATE_COMMAND_BUFFER => {
+                let req = proto::vk::AllocateCommandBufferRequest::decode(body)?;
+                // The command pool must have been created on this backend.
+                if self.command_pools.get(req.pool).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                let command_buffer = self
+                    .command_buffers
+                    .insert(KIND_COMMAND_BUFFER, CommandBufferState { pool: req.pool });
+                let mut out = Vec::new();
+                proto::vk::AllocateCommandBufferResponse { command_buffer }.encode(&mut out);
+                Ok(out)
+            }
+            proto::vk_op::QUEUE_SUBMIT => {
+                let req = proto::vk::QueueSubmitRequest::decode(body)?;
+                // Both the queue and the command buffer must exist on this
+                // backend.
+                if self.queues.get(req.queue).is_none()
+                    || self.command_buffers.get(req.command_buffer).is_none()
+                {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                Ok(Vec::new())
+            }
             // Everything else in the Vulkan namespace is not implemented yet.
             other => Err(proto::ProtocolError::UnknownOpcode(other)),
         }
@@ -369,6 +439,69 @@ mod tests {
         }
         .encode(&mut body);
         body
+    }
+
+    /// Encode a `CREATE_COMMAND_POOL` request body.
+    fn create_command_pool_body(device: proto::Handle, queue_family_index: u32) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::CreateCommandPoolRequest {
+            device,
+            queue_family_index,
+        }
+        .encode(&mut body);
+        body
+    }
+
+    /// Encode an `ALLOCATE_COMMAND_BUFFER` request body.
+    fn allocate_command_buffer_body(pool: proto::Handle) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::AllocateCommandBufferRequest { pool }.encode(&mut body);
+        body
+    }
+
+    /// Encode a `QUEUE_SUBMIT` request body.
+    fn queue_submit_body(queue: proto::Handle, command_buffer: proto::Handle) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::QueueSubmitRequest {
+            queue,
+            command_buffer,
+        }
+        .encode(&mut body);
+        body
+    }
+
+    /// Drive a backend up through `GET_DEVICE_QUEUE`, returning the logical
+    /// device handle alongside its minted queue handle.
+    fn create_queue_one(backend: &mut VulkanBackend) -> (proto::Handle, proto::Handle) {
+        let device = create_device_one(backend);
+        let queue_resp = backend
+            .handle(
+                proto::vk_op::GET_DEVICE_QUEUE,
+                4,
+                &get_device_queue_body(device, 0, 0),
+            )
+            .expect("get device queue should succeed");
+        let queue = proto::vk::GetDeviceQueueResponse::decode(&queue_resp)
+            .expect("decode queue response")
+            .queue;
+        (device, queue)
+    }
+
+    /// Drive a backend up through `CREATE_COMMAND_POOL`, returning the logical
+    /// device handle alongside its minted command-pool handle.
+    fn create_command_pool_one(backend: &mut VulkanBackend) -> (proto::Handle, proto::Handle) {
+        let device = create_device_one(backend);
+        let pool_resp = backend
+            .handle(
+                proto::vk_op::CREATE_COMMAND_POOL,
+                7,
+                &create_command_pool_body(device, 0),
+            )
+            .expect("create command pool should succeed");
+        let pool = proto::vk::CreateCommandPoolResponse::decode(&pool_resp)
+            .expect("decode command pool response")
+            .pool;
+        (device, pool)
     }
 
     /// Drive a backend through `CREATE_INSTANCE` then `ENUMERATE_PHYSICAL_DEVICES`,
@@ -804,5 +937,163 @@ mod tests {
         let state = backend.buffers.get(buffer).expect("buffer state present");
         let (_, offset) = state.bound.expect("original binding intact");
         assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn create_command_pool_after_create_device_returns_pool_handle() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+
+        let resp = backend
+            .handle(
+                proto::vk_op::CREATE_COMMAND_POOL,
+                7,
+                &create_command_pool_body(device, 3),
+            )
+            .expect("create command pool should succeed");
+
+        let decoded = proto::vk::CreateCommandPoolResponse::decode(&resp).expect("decode response");
+        assert_eq!(decoded.pool.kind(), KIND_COMMAND_POOL);
+        let state = backend
+            .command_pools
+            .get(decoded.pool)
+            .expect("pool state present");
+        assert_eq!(state.device.raw(), device.raw());
+        assert_eq!(state.queue_family_index, 3);
+    }
+
+    #[test]
+    fn create_command_pool_with_bogus_device_errors() {
+        let mut backend = VulkanBackend::new();
+        // A handle that was never created by this backend.
+        let bogus = proto::Handle::new(KIND_DEVICE, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::CREATE_COMMAND_POOL,
+                1,
+                &create_command_pool_body(bogus, 0),
+            )
+            .expect_err("create command pool with bogus device must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn allocate_command_buffer_after_create_pool_returns_buffer_handle() {
+        let mut backend = VulkanBackend::new();
+        let (_device, pool) = create_command_pool_one(&mut backend);
+
+        let resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_COMMAND_BUFFER,
+                8,
+                &allocate_command_buffer_body(pool),
+            )
+            .expect("allocate command buffer should succeed");
+
+        let decoded =
+            proto::vk::AllocateCommandBufferResponse::decode(&resp).expect("decode response");
+        assert_eq!(decoded.command_buffer.kind(), KIND_COMMAND_BUFFER);
+        let state = backend
+            .command_buffers
+            .get(decoded.command_buffer)
+            .expect("command buffer state present");
+        assert_eq!(state.pool.raw(), pool.raw());
+    }
+
+    #[test]
+    fn allocate_command_buffer_with_bogus_pool_errors() {
+        let mut backend = VulkanBackend::new();
+        // A handle that was never minted by this backend.
+        let bogus = proto::Handle::new(KIND_COMMAND_POOL, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::ALLOCATE_COMMAND_BUFFER,
+                1,
+                &allocate_command_buffer_body(bogus),
+            )
+            .expect_err("allocate command buffer with bogus pool must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn queue_submit_validates_queue_and_command_buffer() {
+        let mut backend = VulkanBackend::new();
+        let (device, queue) = create_queue_one(&mut backend);
+
+        // Create a command pool on the same device and allocate a buffer.
+        let pool_resp = backend
+            .handle(
+                proto::vk_op::CREATE_COMMAND_POOL,
+                7,
+                &create_command_pool_body(device, 0),
+            )
+            .expect("create command pool should succeed");
+        let pool = proto::vk::CreateCommandPoolResponse::decode(&pool_resp)
+            .expect("decode pool response")
+            .pool;
+        let buf_resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_COMMAND_BUFFER,
+                8,
+                &allocate_command_buffer_body(pool),
+            )
+            .expect("allocate command buffer should succeed");
+        let command_buffer = proto::vk::AllocateCommandBufferResponse::decode(&buf_resp)
+            .expect("decode command buffer response")
+            .command_buffer;
+
+        let ack = backend
+            .handle(
+                proto::vk_op::QUEUE_SUBMIT,
+                9,
+                &queue_submit_body(queue, command_buffer),
+            )
+            .expect("queue submit should succeed");
+        // The reply is an empty ack body.
+        assert!(ack.is_empty());
+    }
+
+    #[test]
+    fn queue_submit_with_bogus_queue_errors() {
+        let mut backend = VulkanBackend::new();
+        let (_device, pool) = create_command_pool_one(&mut backend);
+        let buf_resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_COMMAND_BUFFER,
+                8,
+                &allocate_command_buffer_body(pool),
+            )
+            .expect("allocate command buffer should succeed");
+        let command_buffer = proto::vk::AllocateCommandBufferResponse::decode(&buf_resp)
+            .expect("decode command buffer response")
+            .command_buffer;
+
+        // A queue handle that was never minted by this backend.
+        let bogus_queue = proto::Handle::new(KIND_QUEUE, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::QUEUE_SUBMIT,
+                9,
+                &queue_submit_body(bogus_queue, command_buffer),
+            )
+            .expect_err("queue submit with bogus queue must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn queue_submit_with_bogus_command_buffer_errors() {
+        let mut backend = VulkanBackend::new();
+        let (_device, queue) = create_queue_one(&mut backend);
+
+        // A command buffer handle that was never allocated by this backend.
+        let bogus_buffer = proto::Handle::new(KIND_COMMAND_BUFFER, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::QUEUE_SUBMIT,
+                9,
+                &queue_submit_body(queue, bogus_buffer),
+            )
+            .expect_err("queue submit with bogus command buffer must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
     }
 }

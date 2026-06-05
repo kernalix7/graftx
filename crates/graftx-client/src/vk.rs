@@ -21,6 +21,10 @@ const KIND_QUEUE: u8 = 4;
 const KIND_DEVICE_MEMORY: u8 = 5;
 /// Server object kind for a `VkBuffer` handle.
 const KIND_BUFFER: u8 = 6;
+/// Server object kind for a `VkCommandPool` handle.
+const KIND_COMMAND_POOL: u8 = 7;
+/// Server object kind for a `VkCommandBuffer` handle.
+const KIND_COMMAND_BUFFER: u8 = 8;
 
 /// Issue `vkCreateInstance` and return the new instance [`Handle`](proto::Handle).
 ///
@@ -337,6 +341,141 @@ pub fn bind_buffer_memory<T: Transport>(
     let reply = t.recv()?;
     let (h, _b) = proto::decode_frame(&reply)?;
     if h.opcode != proto::vk_op::BIND_BUFFER_MEMORY || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
+}
+
+/// Issue `vkCreateCommandPool` and return the new command-pool [`Handle`](proto::Handle).
+///
+/// Sends a [`CREATE_COMMAND_POOL`](proto::vk_op::CREATE_COMMAND_POOL) request
+/// carrying a [`CreateCommandPoolRequest`](proto::vk::CreateCommandPoolRequest)
+/// naming `device` and the `queue_family_index` the pool's buffers are submitted
+/// to, awaits the correlated response, validates its opcode and kind, decodes the
+/// [`CreateCommandPoolResponse`](proto::vk::CreateCommandPoolResponse), and
+/// verifies the returned handle names a `VkCommandPool`.
+pub fn create_command_pool<T: Transport>(
+    t: &mut T,
+    device: proto::Handle,
+    queue_family_index: u32,
+    req_id: u32,
+    seq: u64,
+) -> Result<proto::Handle, ClientError> {
+    let mut body = Vec::new();
+    proto::vk::CreateCommandPoolRequest {
+        device,
+        queue_family_index,
+    }
+    .encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::CREATE_COMMAND_POOL,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::CREATE_COMMAND_POOL || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    let resp = proto::vk::CreateCommandPoolResponse::decode(b)?;
+    if resp.pool.kind() != KIND_COMMAND_POOL {
+        return Err(ClientError::Protocol(proto::ProtocolError::BadKind(
+            resp.pool.kind() as u16,
+        )));
+    }
+    Ok(resp.pool)
+}
+
+/// Issue `vkAllocateCommandBuffers` and return the new command-buffer [`Handle`](proto::Handle).
+///
+/// Sends an [`ALLOCATE_COMMAND_BUFFER`](proto::vk_op::ALLOCATE_COMMAND_BUFFER)
+/// request carrying an
+/// [`AllocateCommandBufferRequest`](proto::vk::AllocateCommandBufferRequest)
+/// naming the `pool` the buffer is allocated from, awaits the correlated
+/// response, validates its opcode and kind, decodes the
+/// [`AllocateCommandBufferResponse`](proto::vk::AllocateCommandBufferResponse),
+/// and verifies the returned handle names a `VkCommandBuffer`.
+pub fn allocate_command_buffer<T: Transport>(
+    t: &mut T,
+    pool: proto::Handle,
+    req_id: u32,
+    seq: u64,
+) -> Result<proto::Handle, ClientError> {
+    let mut body = Vec::new();
+    proto::vk::AllocateCommandBufferRequest { pool }.encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::ALLOCATE_COMMAND_BUFFER,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::ALLOCATE_COMMAND_BUFFER || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    let resp = proto::vk::AllocateCommandBufferResponse::decode(b)?;
+    if resp.command_buffer.kind() != KIND_COMMAND_BUFFER {
+        return Err(ClientError::Protocol(proto::ProtocolError::BadKind(
+            resp.command_buffer.kind() as u16,
+        )));
+    }
+    Ok(resp.command_buffer)
+}
+
+/// Issue `vkQueueSubmit`, submitting `command_buffer` to `queue`.
+///
+/// Sends a [`QUEUE_SUBMIT`](proto::vk_op::QUEUE_SUBMIT) request carrying a
+/// [`QueueSubmitRequest`](proto::vk::QueueSubmitRequest), awaits the correlated
+/// response, and validates its opcode and kind. The reply body is an empty
+/// acknowledgement, so nothing is decoded.
+pub fn queue_submit<T: Transport>(
+    t: &mut T,
+    queue: proto::Handle,
+    command_buffer: proto::Handle,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::vk::QueueSubmitRequest {
+        queue,
+        command_buffer,
+    }
+    .encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::QUEUE_SUBMIT,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::QUEUE_SUBMIT || h.kind != proto::FrameKind::Response {
         return Err(ClientError::UnexpectedReply {
             opcode: h.opcode,
             kind: h.kind,
