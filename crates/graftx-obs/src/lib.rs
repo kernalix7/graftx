@@ -15,10 +15,12 @@
 //! module.
 
 mod guard;
+mod hist;
 mod registry;
 mod timer;
 
 pub use guard::{begin, CallGuard};
+pub use hist::{LatencyHist, BUCKETS};
 pub use registry::{global, record, ObsRegistry};
 pub use timer::{time_call, Timer};
 
