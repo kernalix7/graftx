@@ -35,6 +35,7 @@ belongs in `../`, not here.
 - [`ROADMAP.md`](ROADMAP.md) — condensed milestone plan (M0–M5 plus performance
   work). Chapter 30 of the implementation plan is the detailed expansion.
 - [`PROTOCOL.md`](PROTOCOL.md) — wire-protocol reference: transport vs. protocol
+- [`OPCODES.md`](OPCODES.md) — generated opcode table (run `cargo xtask opcodes-md`); kept in sync via `opcodes-lock`.
   frame layering, the 28-byte `FrameHeader`, `FrameKind`, the opcode scheme and
   `ApiId` table, the `Hello`/`Welcome` handshake, and the 64-bit `Handle`
   layout, as implemented in `crates/graftx-protocol`.
