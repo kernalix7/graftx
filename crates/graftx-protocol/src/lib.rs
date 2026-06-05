@@ -170,6 +170,18 @@ pub mod hip_op {
     pub const STREAM_CREATE: u32 = opcode(ApiId::Hip, 0x0003);
 }
 
+/// OpenCL opcodes (under [`ApiId::OpenCl`]).
+pub mod cl_op {
+    use super::{opcode, ApiId};
+
+    /// `clCreateContext`: create an OpenCL context.
+    pub const CREATE_CONTEXT: u32 = opcode(ApiId::OpenCl, 0x0001);
+    /// `clCreateBuffer`: create a memory buffer in a context.
+    pub const CREATE_BUFFER: u32 = opcode(ApiId::OpenCl, 0x0002);
+    /// `clReleaseMemObject`: release a previously created memory buffer.
+    pub const RELEASE_BUFFER: u32 = opcode(ApiId::OpenCl, 0x0003);
+}
+
 /// Vulkan request/response body encoders and decoders.
 ///
 /// These match the canonical wire bodies for the Vulkan opcodes in [`vk_op`].
@@ -842,6 +854,118 @@ pub mod hip {
             let mut r = Reader::new(buf);
             Ok(Self {
                 stream: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// OpenCL request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the OpenCL opcodes in [`cl_op`].
+/// Every multi-byte field is little-endian and a [`Handle`] is carried as its
+/// raw 64-bit value (see [`Handle::raw`]). Short buffers decode to
+/// [`ProtocolError::UnexpectedEof`].
+///
+/// [`cl_op::CREATE_CONTEXT`](super::cl_op::CREATE_CONTEXT) takes an empty
+/// request body, and [`cl_op::RELEASE_BUFFER`](super::cl_op::RELEASE_BUFFER)
+/// replies with an empty (ack) body, so neither needs a struct here.
+pub mod cl {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Response body for
+    /// [`cl_op::CREATE_CONTEXT`](super::cl_op::CREATE_CONTEXT).
+    ///
+    /// The request body is empty, so there is no request struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateContextResponse {
+        /// Handle naming the newly created context.
+        pub context: Handle,
+    }
+
+    impl CreateContextResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`cl_op::CREATE_BUFFER`](super::cl_op::CREATE_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateBufferRequest {
+        /// Handle naming the context the buffer is created in.
+        pub context: Handle,
+        /// Size of the buffer in bytes.
+        pub size: u64,
+    }
+
+    impl CreateBufferRequest {
+        /// Append the encoded body to `out`: a raw `u64` context handle followed
+        /// by the `u64` buffer size.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+            out.extend_from_slice(&self.size.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+                size: r.u64()?,
+            })
+        }
+    }
+
+    /// Response body for [`cl_op::CREATE_BUFFER`](super::cl_op::CREATE_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateBufferResponse {
+        /// Handle naming the newly created memory buffer.
+        pub mem: Handle,
+    }
+
+    impl CreateBufferResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.mem.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                mem: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`cl_op::RELEASE_BUFFER`](super::cl_op::RELEASE_BUFFER).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ReleaseBufferRequest {
+        /// Handle naming the memory buffer being released.
+        pub mem: Handle,
+    }
+
+    impl ReleaseBufferRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.mem.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                mem: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -1709,6 +1833,80 @@ mod tests {
         );
         assert_eq!(
             hip::StreamCreateResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn cl_opcodes_are_in_opencl_namespace() {
+        assert_eq!(opcode_api(cl_op::CREATE_CONTEXT), ApiId::OpenCl as u8);
+        assert_eq!(opcode_api(cl_op::CREATE_BUFFER), ApiId::OpenCl as u8);
+        assert_eq!(opcode_api(cl_op::RELEASE_BUFFER), ApiId::OpenCl as u8);
+        assert_eq!(opcode_call(cl_op::CREATE_CONTEXT), 0x0001);
+        assert_eq!(opcode_call(cl_op::CREATE_BUFFER), 0x0002);
+        assert_eq!(opcode_call(cl_op::RELEASE_BUFFER), 0x0003);
+        assert_ne!(cl_op::CREATE_CONTEXT, cl_op::CREATE_BUFFER);
+        assert_ne!(cl_op::CREATE_BUFFER, cl_op::RELEASE_BUFFER);
+    }
+
+    #[test]
+    fn cl_create_context_response_roundtrip() {
+        let resp = cl::CreateContextResponse {
+            context: Handle::new(12, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(cl::CreateContextResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn cl_create_buffer_roundtrip() {
+        let req = cl::CreateBufferRequest {
+            context: Handle::new(12, 2, 4),
+            size: 0x1234_5678_9ABC_DEF0,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(cl::CreateBufferRequest::decode(&b).expect("req"), req);
+
+        let resp = cl::CreateBufferResponse {
+            mem: Handle::new(13, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(cl::CreateBufferResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn cl_release_buffer_roundtrip() {
+        let req = cl::ReleaseBufferRequest {
+            mem: Handle::new(13, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(cl::ReleaseBufferRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn cl_bodies_reject_short_buffers() {
+        assert_eq!(
+            cl::CreateContextResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cl::CreateBufferRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cl::CreateBufferResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cl::ReleaseBufferRequest::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
