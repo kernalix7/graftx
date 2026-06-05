@@ -7,7 +7,9 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod backend;
+pub mod gl_backend;
 pub mod session;
 
 pub use backend::{Backend, VulkanBackend};
+pub use gl_backend::GlBackend;
 pub use session::Session;

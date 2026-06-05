@@ -128,6 +128,18 @@ pub mod vk_op {
     pub const DEVICE_WAIT_IDLE: u32 = opcode(ApiId::Vulkan, 0x0008);
 }
 
+/// OpenGL opcodes (under [`ApiId::OpenGl`]).
+pub mod gl_op {
+    use super::{opcode, ApiId};
+
+    /// Create a rendering context.
+    pub const CREATE_CONTEXT: u32 = opcode(ApiId::OpenGl, 0x0001);
+    /// Make a context current on the calling session.
+    pub const MAKE_CURRENT: u32 = opcode(ApiId::OpenGl, 0x0002);
+    /// Generate a buffer object within a context.
+    pub const GEN_BUFFER: u32 = opcode(ApiId::OpenGl, 0x0003);
+}
+
 /// Vulkan request/response body encoders and decoders.
 ///
 /// These match the canonical wire bodies for the Vulkan opcodes in [`vk_op`].
@@ -327,6 +339,108 @@ pub mod vk {
             let mut r = Reader::new(buf);
             Ok(Self {
                 queue: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// OpenGL request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the OpenGL opcodes in [`gl_op`].
+/// Every multi-byte field is little-endian and a [`Handle`] is carried as its
+/// raw 64-bit value (see [`Handle::raw`]). Short buffers decode to
+/// [`ProtocolError::UnexpectedEof`].
+///
+/// [`gl_op::CREATE_CONTEXT`](super::gl_op::CREATE_CONTEXT) takes an empty
+/// request body, and [`gl_op::MAKE_CURRENT`](super::gl_op::MAKE_CURRENT)
+/// replies with an empty (ack) body, so neither needs a struct here.
+pub mod gl {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Response body for [`gl_op::CREATE_CONTEXT`](super::gl_op::CREATE_CONTEXT).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateContextResponse {
+        /// Handle naming the newly created context.
+        pub context: Handle,
+    }
+
+    impl CreateContextResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`gl_op::MAKE_CURRENT`](super::gl_op::MAKE_CURRENT).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MakeCurrentRequest {
+        /// Handle naming the context to make current.
+        pub context: Handle,
+    }
+
+    impl MakeCurrentRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`gl_op::GEN_BUFFER`](super::gl_op::GEN_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct GenBufferRequest {
+        /// Handle naming the context the buffer is generated in.
+        pub context: Handle,
+    }
+
+    impl GenBufferRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Response body for [`gl_op::GEN_BUFFER`](super::gl_op::GEN_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct GenBufferResponse {
+        /// Handle naming the newly generated buffer.
+        pub buffer: Handle,
+    }
+
+    impl GenBufferResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.buffer.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                buffer: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -641,6 +755,15 @@ mod tests {
     }
 
     #[test]
+    fn gl_opcodes_are_in_opengl_namespace() {
+        assert_eq!(opcode_api(gl_op::CREATE_CONTEXT), ApiId::OpenGl as u8);
+        assert_eq!(opcode_api(gl_op::MAKE_CURRENT), ApiId::OpenGl as u8);
+        assert_eq!(opcode_api(gl_op::GEN_BUFFER), ApiId::OpenGl as u8);
+        assert_ne!(gl_op::CREATE_CONTEXT, gl_op::MAKE_CURRENT);
+        assert_ne!(gl_op::MAKE_CURRENT, gl_op::GEN_BUFFER);
+    }
+
+    #[test]
     fn frame_header_roundtrip() {
         let h = FrameHeader {
             version: PROTOCOL_MAJOR,
@@ -877,6 +1000,67 @@ mod tests {
         );
         assert_eq!(
             vk::GetDeviceQueueResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn gl_create_context_response_roundtrip() {
+        let resp = gl::CreateContextResponse {
+            context: Handle::new(10, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(gl::CreateContextResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn gl_make_current_request_roundtrip() {
+        let req = gl::MakeCurrentRequest {
+            context: Handle::new(10, 3, 7),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(gl::MakeCurrentRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn gl_gen_buffer_roundtrip() {
+        let req = gl::GenBufferRequest {
+            context: Handle::new(10, 2, 4),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(gl::GenBufferRequest::decode(&b).expect("req"), req);
+
+        let resp = gl::GenBufferResponse {
+            buffer: Handle::new(11, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(gl::GenBufferResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn gl_bodies_reject_short_buffers() {
+        assert_eq!(
+            gl::CreateContextResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            gl::MakeCurrentRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            gl::GenBufferRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            gl::GenBufferResponse::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
