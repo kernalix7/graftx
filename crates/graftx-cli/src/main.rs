@@ -6,8 +6,9 @@
 //! [`Welcome`](graftx_protocol::Welcome), and exits. `graftx noop <addr>` does
 //! the same bring-up and then issues a single [`graftx_client::noop`] to confirm
 //! the pipe round-trips, printing `ok`. `graftx apis` prints the API namespace
-//! table (the high byte of every opcode) without touching the network. With no
-//! subcommand it prints usage and the protocol version this build speaks.
+//! table (the high byte of every opcode) as a markdown table without touching
+//! the network. With no subcommand it prints usage and the protocol version this
+//! build speaks.
 //!
 //! Deliberately depends only on the protocol, transport, and client crates —
 //! never the server — so the CLI stays a pure client.
@@ -274,14 +275,13 @@ mod tests {
     }
 
     #[test]
-    fn apis_table_lists_first_and_last_namespaces() {
+    fn apis_table_is_markdown_with_first_and_last_rows() {
         let mut buf = Vec::new();
         print_apis(&mut buf);
         let text = String::from_utf8(buf).expect("apis table is utf-8");
-        assert!(text.contains("0x00"));
-        assert!(text.contains("Core"));
-        assert!(text.contains("0x0b"));
-        assert!(text.contains("Amf"));
+        assert!(text.contains("| ApiId | API |"));
+        assert!(text.contains("| 0x00 | Core |"));
+        assert!(text.contains("| 0x0b | Amf |"));
     }
 
     #[test]
