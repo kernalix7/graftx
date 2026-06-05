@@ -10,6 +10,10 @@
 use std::io;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
+mod stream;
+
+pub use stream::{StreamTransport, MAX_FRAME};
+
 /// A bidirectional, message-framed byte channel between two endpoints.
 pub trait Transport {
     /// Send one framed message to the peer.
