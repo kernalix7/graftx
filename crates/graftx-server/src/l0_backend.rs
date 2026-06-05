@@ -174,8 +174,7 @@ mod tests {
             .handle(proto::l0_op::CONTEXT_CREATE, 1, &[])
             .expect("context create should succeed");
 
-        let decoded =
-            proto::l0::ContextCreateResponse::decode(&resp).expect("decode response");
+        let decoded = proto::l0::ContextCreateResponse::decode(&resp).expect("decode response");
         assert_eq!(decoded.context.kind(), KIND_L0_CONTEXT);
         // The returned handle must resolve in the context table.
         assert!(backend.contexts.get(decoded.context).is_some());
@@ -194,8 +193,7 @@ mod tests {
             )
             .expect("mem alloc should succeed");
 
-        let decoded =
-            proto::l0::MemAllocDeviceResponse::decode(&resp).expect("decode response");
+        let decoded = proto::l0::MemAllocDeviceResponse::decode(&resp).expect("decode response");
         assert_eq!(decoded.ptr.kind(), KIND_L0_DEVICE_MEM);
         let state = backend.mems.get(decoded.ptr).expect("mem state present");
         assert_eq!(state.context.raw(), context.raw());
