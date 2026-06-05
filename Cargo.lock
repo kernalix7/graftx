@@ -70,9 +70,18 @@ version = "0.0.0"
 dependencies = [
  "graftx-client",
  "graftx-handles",
+ "graftx-obs",
  "graftx-protocol",
  "graftx-transport",
  "thiserror",
+]
+
+[[package]]
+name = "graftx-trace"
+version = "0.0.0"
+dependencies = [
+ "graftx-protocol",
+ "graftx-transport",
 ]
 
 [[package]]

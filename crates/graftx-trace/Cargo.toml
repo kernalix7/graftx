@@ -1,0 +1,13 @@
+[package]
+name = "graftx-trace"
+description = "GraftX frame trace: capture protocol frames passing over a transport and replay them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+graftx-protocol.workspace = true
+graftx-transport.workspace = true

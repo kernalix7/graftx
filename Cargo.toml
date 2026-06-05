@@ -4,6 +4,7 @@ members = [
     "crates/graftx-protocol",
     "crates/graftx-handles",
     "crates/graftx-transport",
+    "crates/graftx-trace",
     "crates/graftx-client",
     "crates/graftx-server",
     "crates/graftx-obs",
@@ -25,6 +26,7 @@ repository = "https://github.com/kernalix7/graftx"
 graftx-protocol = { path = "crates/graftx-protocol" }
 graftx-handles = { path = "crates/graftx-handles" }
 graftx-transport = { path = "crates/graftx-transport" }
+graftx-trace = { path = "crates/graftx-trace" }
 graftx-obs = { path = "crates/graftx-obs" }
 thiserror = "2"
 tracing = "0.1"
