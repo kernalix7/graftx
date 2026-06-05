@@ -194,6 +194,18 @@ pub mod l0_op {
     pub const MEM_FREE: u32 = opcode(ApiId::LevelZero, 0x0003);
 }
 
+/// Video codec opcodes (under [`ApiId::Video`]).
+pub mod video_op {
+    use super::{opcode, ApiId};
+
+    /// Create a decode session for a given codec and frame geometry.
+    pub const CREATE_DECODE_SESSION: u32 = opcode(ApiId::Video, 0x0001);
+    /// Submit a coded bitstream to a session and decode one frame.
+    pub const DECODE_FRAME: u32 = opcode(ApiId::Video, 0x0002);
+    /// Destroy a previously created decode session.
+    pub const DESTROY_SESSION: u32 = opcode(ApiId::Video, 0x0003);
+}
+
 /// Vulkan request/response body encoders and decoders.
 ///
 /// These match the canonical wire bodies for the Vulkan opcodes in [`vk_op`].
@@ -1092,6 +1104,148 @@ pub mod l0 {
             let mut r = Reader::new(buf);
             Ok(Self {
                 ptr: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// Video codec request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the Video opcodes in
+/// [`video_op`]. Every multi-byte field is little-endian and a [`Handle`] is
+/// carried as its raw 64-bit value (see [`Handle::raw`]). Short buffers decode
+/// to [`ProtocolError::UnexpectedEof`].
+///
+/// [`video_op::DESTROY_SESSION`](super::video_op::DESTROY_SESSION) replies with
+/// an empty (ack) body, so its response needs no struct here.
+pub mod video {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Request body for
+    /// [`video_op::CREATE_DECODE_SESSION`](super::video_op::CREATE_DECODE_SESSION).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateDecodeSessionRequest {
+        /// Codec identifier the session decodes.
+        pub codec: u32,
+        /// Decoded frame width in pixels.
+        pub width: u32,
+        /// Decoded frame height in pixels.
+        pub height: u32,
+    }
+
+    impl CreateDecodeSessionRequest {
+        /// Append the encoded body to `out`: the `u32` codec id followed by the
+        /// `u32` width and `u32` height.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.codec.to_le_bytes());
+            out.extend_from_slice(&self.width.to_le_bytes());
+            out.extend_from_slice(&self.height.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                codec: r.u32()?,
+                width: r.u32()?,
+                height: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`video_op::CREATE_DECODE_SESSION`](super::video_op::CREATE_DECODE_SESSION).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateDecodeSessionResponse {
+        /// Handle naming the newly created decode session.
+        pub session: Handle,
+    }
+
+    impl CreateDecodeSessionResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.session.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                session: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`video_op::DECODE_FRAME`](super::video_op::DECODE_FRAME).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DecodeFrameRequest {
+        /// Handle naming the decode session the bitstream is submitted to.
+        pub session: Handle,
+        /// Length of the coded bitstream in bytes.
+        pub bitstream_len: u32,
+    }
+
+    impl DecodeFrameRequest {
+        /// Append the encoded body to `out`: a raw `u64` session handle followed
+        /// by the `u32` bitstream length.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.session.raw().to_le_bytes());
+            out.extend_from_slice(&self.bitstream_len.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                session: Handle::from_raw(r.u64()?),
+                bitstream_len: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for [`video_op::DECODE_FRAME`](super::video_op::DECODE_FRAME).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DecodeFrameResponse {
+        /// Index of the decoded frame in the session's output sequence.
+        pub frame_index: u32,
+    }
+
+    impl DecodeFrameResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.frame_index.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                frame_index: r.u32()?,
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`video_op::DESTROY_SESSION`](super::video_op::DESTROY_SESSION).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DestroySessionRequest {
+        /// Handle naming the decode session being destroyed.
+        pub session: Handle,
+    }
+
+    impl DestroySessionRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.session.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                session: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -2127,5 +2281,102 @@ mod tests {
         let (gh, gb) = decode_frame(&frame).expect("decode");
         assert_eq!(gh, h);
         assert_eq!(gb, &body);
+    }
+
+    #[test]
+    fn video_opcodes_are_in_video_namespace() {
+        assert_eq!(
+            opcode_api(video_op::CREATE_DECODE_SESSION),
+            ApiId::Video as u8
+        );
+        assert_eq!(opcode_api(video_op::DECODE_FRAME), ApiId::Video as u8);
+        assert_eq!(opcode_api(video_op::DESTROY_SESSION), ApiId::Video as u8);
+        assert_eq!(opcode_call(video_op::CREATE_DECODE_SESSION), 0x0001);
+        assert_eq!(opcode_call(video_op::DECODE_FRAME), 0x0002);
+        assert_eq!(opcode_call(video_op::DESTROY_SESSION), 0x0003);
+        assert_ne!(video_op::CREATE_DECODE_SESSION, video_op::DECODE_FRAME);
+        assert_ne!(video_op::DECODE_FRAME, video_op::DESTROY_SESSION);
+    }
+
+    #[test]
+    fn video_create_decode_session_roundtrip() {
+        let req = video::CreateDecodeSessionRequest {
+            codec: 0xDEAD_BEEF,
+            width: 1920,
+            height: 1080,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 12);
+        assert_eq!(
+            video::CreateDecodeSessionRequest::decode(&b).expect("req"),
+            req
+        );
+
+        let resp = video::CreateDecodeSessionResponse {
+            session: Handle::new(16, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(
+            video::CreateDecodeSessionResponse::decode(&b).expect("resp"),
+            resp
+        );
+    }
+
+    #[test]
+    fn video_decode_frame_roundtrip() {
+        let req = video::DecodeFrameRequest {
+            session: Handle::new(16, 2, 4),
+            bitstream_len: u32::MAX,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 12);
+        assert_eq!(video::DecodeFrameRequest::decode(&b).expect("req"), req);
+
+        let resp = video::DecodeFrameResponse {
+            frame_index: 0x1234_5678,
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 4);
+        assert_eq!(video::DecodeFrameResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn video_destroy_session_roundtrip() {
+        let req = video::DestroySessionRequest {
+            session: Handle::new(16, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(video::DestroySessionRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn video_bodies_reject_short_buffers() {
+        assert_eq!(
+            video::CreateDecodeSessionRequest::decode(&[0u8; 11]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            video::CreateDecodeSessionResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            video::DecodeFrameRequest::decode(&[0u8; 11]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            video::DecodeFrameResponse::decode(&[0u8; 3]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            video::DestroySessionRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
     }
 }
