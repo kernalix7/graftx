@@ -38,6 +38,10 @@ belongs in `../`, not here.
   frame layering, the 28-byte `FrameHeader`, `FrameKind`, the opcode scheme and
   `ApiId` table, the `Hello`/`Welcome` handshake, and the 64-bit `Handle`
   layout, as implemented in `crates/graftx-protocol`.
+- [`BACKENDS.md`](BACKENDS.md) — per-API status matrix tracking each GPU API
+  through the remoting pipeline (protocol codecs → server backend → client shim
+  → end-to-end test), as implemented in the `graftx-protocol`, `graftx-server`,
+  and `graftx-client` crates. All backends are remoting-path stubs.
 
 Protocol and transport design specs are covered in detail by the implementation
 plan ([`plan/06-protocol.md`](plan/06-protocol.md),
