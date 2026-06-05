@@ -50,6 +50,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftx-loadtest"
+version = "0.0.0"
+dependencies = [
+ "graftx-client",
+ "graftx-obs",
+ "graftx-protocol",
+ "graftx-server",
+ "graftx-transport",
+]
+
+[[package]]
 name = "graftx-obs"
 version = "0.0.0"
 dependencies = [

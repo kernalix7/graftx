@@ -12,6 +12,7 @@ members = [
     "crates/graftx-xtask",
     "crates/graftx-bench",
     "crates/graftx-fuzz",
+    "crates/graftx-loadtest",
 ]
 
 [workspace.package]

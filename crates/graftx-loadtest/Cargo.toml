@@ -1,0 +1,20 @@
+[package]
+name = "graftx-loadtest"
+description = "GraftX in-process load generator: drives N forwarded calls through a loopback server and reports throughput."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "graftx-loadtest"
+path = "src/main.rs"
+
+[dependencies]
+graftx-protocol.workspace = true
+graftx-transport.workspace = true
+graftx-obs.workspace = true
+graftx-client = { path = "../graftx-client" }
+graftx-server = { path = "../graftx-server" }
