@@ -3,8 +3,10 @@
 //! A thin wrapper around [`graftx_client`] that shows the session bring-up over
 //! a real socket: `graftx connect <addr>` opens a [`TcpStream`], wraps it in a
 //! [`StreamTransport`], runs [`graftx_client::handshake`], prints the negotiated
-//! [`Welcome`](graftx_protocol::Welcome), and exits. With no subcommand it
-//! prints usage and the protocol version this build speaks.
+//! [`Welcome`](graftx_protocol::Welcome), and exits. `graftx noop <addr>` does
+//! the same bring-up and then issues a single [`graftx_client::noop`] to confirm
+//! the pipe round-trips, printing `ok`. With no subcommand it prints usage and
+//! the protocol version this build speaks.
 //!
 //! Deliberately depends only on the protocol, transport, and client crates —
 //! never the server — so the CLI stays a pure client.
@@ -19,8 +21,14 @@ use graftx_transport::StreamTransport;
 /// Exit code returned for an unknown or malformed invocation.
 const EXIT_USAGE: u8 = 2;
 
-/// Exit code returned when a `connect` attempt fails (network or handshake).
+/// Exit code returned when a `connect` or `noop` attempt fails (network,
+/// handshake, or the no-op round-trip itself).
 const EXIT_CONNECT: u8 = 1;
+
+/// `req_id`/`seq` used for the post-handshake no-op. The handshake spends 1, so
+/// the first follow-up request on the session is 2.
+const NOOP_REQ_ID: u32 = 2;
+const NOOP_SEQ: u64 = 2;
 
 fn main() -> ExitCode {
     // Skip argv[0] (the binary path); the dispatcher only cares about the
@@ -35,8 +43,8 @@ fn main() -> ExitCode {
 /// selects the subcommand; with no arguments we print usage and exit cleanly.
 ///
 /// Returns [`ExitCode::SUCCESS`] for usage/help, [`EXIT_CONNECT`] when a
-/// `connect` fails, and [`EXIT_USAGE`] for a missing address or unknown
-/// subcommand — keeping a usage error distinct from a runtime failure.
+/// `connect` or `noop` fails, and [`EXIT_USAGE`] for a missing address or
+/// unknown subcommand — keeping a usage error distinct from a runtime failure.
 fn run(args: &[String]) -> ExitCode {
     let command = args.first().map(String::as_str);
 
@@ -49,6 +57,13 @@ fn run(args: &[String]) -> ExitCode {
             Some(addr) => connect(addr, &mut io::stdout()),
             None => {
                 eprintln!("graftx: connect requires an <addr> (e.g. 127.0.0.1:7000)");
+                ExitCode::from(EXIT_USAGE)
+            }
+        },
+        Some("noop") => match args.get(1) {
+            Some(addr) => noop(addr, &mut io::stdout()),
+            None => {
+                eprintln!("graftx: noop requires an <addr> (e.g. 127.0.0.1:7000)");
                 ExitCode::from(EXIT_USAGE)
             }
         },
@@ -88,6 +103,37 @@ fn connect<W: Write>(addr: &str, out: &mut W) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Connect to `addr`, handshake, then issue a single no-op round-trip.
+///
+/// Prints `ok` to `out` on success; diagnostics go to stderr. Any network,
+/// handshake, or no-op failure yields [`EXIT_CONNECT`].
+fn noop<W: Write>(addr: &str, out: &mut W) -> ExitCode {
+    let stream = match TcpStream::connect(addr) {
+        Ok(stream) => stream,
+        Err(err) => {
+            eprintln!("graftx: connect to {addr} failed: {err}");
+            return ExitCode::from(EXIT_CONNECT);
+        }
+    };
+
+    let mut transport = StreamTransport::new(stream);
+    if let Err(err) = graftx_client::handshake(&mut transport) {
+        eprintln!("graftx: handshake with {addr} failed: {err}");
+        return ExitCode::from(EXIT_CONNECT);
+    }
+
+    if let Err(err) = graftx_client::noop(&mut transport, NOOP_REQ_ID, NOOP_SEQ) {
+        eprintln!("graftx: noop to {addr} failed: {err}");
+        return ExitCode::from(EXIT_CONNECT);
+    }
+
+    if let Err(err) = writeln!(out, "ok") {
+        eprintln!("graftx: writing output failed: {err}");
+        return ExitCode::from(EXIT_CONNECT);
+    }
+    ExitCode::SUCCESS
+}
+
 /// Render a [`Welcome`](graftx_protocol::Welcome) as the connection summary.
 fn print_welcome<W: Write>(
     addr: &str,
@@ -120,6 +166,10 @@ fn print_usage<W: Write>(out: &mut W) {
         out,
         "    graftx connect <addr>    connect, handshake, print the Welcome"
     );
+    let _ = writeln!(
+        out,
+        "    graftx noop <addr>       connect, handshake, run one no-op, print ok"
+    );
     let _ = writeln!(out, "    graftx help              show this message");
 }
 
@@ -151,6 +201,19 @@ mod tests {
     #[test]
     fn connect_without_addr_is_usage_error() {
         assert_eq!(run(&args(&["connect"])), ExitCode::from(EXIT_USAGE));
+    }
+
+    #[test]
+    fn noop_without_addr_is_usage_error() {
+        assert_eq!(run(&args(&["noop"])), ExitCode::from(EXIT_USAGE));
+    }
+
+    #[test]
+    fn usage_banner_lists_noop_subcommand() {
+        let mut buf = Vec::new();
+        print_usage(&mut buf);
+        let text = String::from_utf8(buf).expect("usage banner is utf-8");
+        assert!(text.contains("noop <addr>"));
     }
 
     #[test]
