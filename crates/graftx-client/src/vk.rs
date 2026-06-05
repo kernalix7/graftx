@@ -13,6 +13,10 @@ use crate::ClientError;
 const KIND_INSTANCE: u8 = 1;
 /// Server object kind for a `VkPhysicalDevice` handle.
 const KIND_PHYSICAL_DEVICE: u8 = 2;
+/// Server object kind for a `VkDevice` handle.
+const KIND_DEVICE: u8 = 3;
+/// Server object kind for a `VkQueue` handle.
+const KIND_QUEUE: u8 = 4;
 
 /// Issue `vkCreateInstance` and return the new instance [`Handle`](proto::Handle).
 ///
@@ -103,4 +107,98 @@ pub fn enumerate_physical_devices<T: Transport>(
         }
     }
     Ok(resp.devices)
+}
+
+/// Issue `vkCreateDevice` and return the new logical-device [`Handle`](proto::Handle).
+///
+/// Sends a [`CREATE_DEVICE`](proto::vk_op::CREATE_DEVICE) request carrying a
+/// [`CreateDeviceRequest`](proto::vk::CreateDeviceRequest) naming
+/// `physical_device`, awaits the correlated response, validates its opcode and
+/// kind, decodes the [`CreateDeviceResponse`](proto::vk::CreateDeviceResponse),
+/// and verifies the returned handle names a `VkDevice`.
+pub fn create_device<T: Transport>(
+    t: &mut T,
+    physical_device: proto::Handle,
+    req_id: u32,
+    seq: u64,
+) -> Result<proto::Handle, ClientError> {
+    let mut body = Vec::new();
+    proto::vk::CreateDeviceRequest { physical_device }.encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::CREATE_DEVICE,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::CREATE_DEVICE || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    let resp = proto::vk::CreateDeviceResponse::decode(b)?;
+    if resp.device.kind() != KIND_DEVICE {
+        return Err(ClientError::Protocol(proto::ProtocolError::BadKind(
+            resp.device.kind() as u16,
+        )));
+    }
+    Ok(resp.device)
+}
+
+/// Issue `vkGetDeviceQueue` and return the queue [`Handle`](proto::Handle).
+///
+/// Sends a [`GET_DEVICE_QUEUE`](proto::vk_op::GET_DEVICE_QUEUE) request carrying
+/// a [`GetDeviceQueueRequest`](proto::vk::GetDeviceQueueRequest) naming `device`
+/// and the queue family and queue indices, awaits the correlated response,
+/// validates its opcode and kind, decodes the
+/// [`GetDeviceQueueResponse`](proto::vk::GetDeviceQueueResponse), and verifies
+/// the returned handle names a `VkQueue`.
+pub fn get_device_queue<T: Transport>(
+    t: &mut T,
+    device: proto::Handle,
+    queue_family_index: u32,
+    queue_index: u32,
+    req_id: u32,
+    seq: u64,
+) -> Result<proto::Handle, ClientError> {
+    let mut body = Vec::new();
+    proto::vk::GetDeviceQueueRequest {
+        device,
+        queue_family_index,
+        queue_index,
+    }
+    .encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::GET_DEVICE_QUEUE,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::GET_DEVICE_QUEUE || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    let resp = proto::vk::GetDeviceQueueResponse::decode(b)?;
+    if resp.queue.kind() != KIND_QUEUE {
+        return Err(ClientError::Protocol(proto::ProtocolError::BadKind(
+            resp.queue.kind() as u16,
+        )));
+    }
+    Ok(resp.queue)
 }

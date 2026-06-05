@@ -233,6 +233,103 @@ pub mod vk {
             Ok(Self { devices })
         }
     }
+
+    /// Request body for [`vk_op::CREATE_DEVICE`](super::vk_op::CREATE_DEVICE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateDeviceRequest {
+        /// Handle naming the physical device the logical device is created from.
+        pub physical_device: Handle,
+    }
+
+    impl CreateDeviceRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.physical_device.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                physical_device: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Response body for [`vk_op::CREATE_DEVICE`](super::vk_op::CREATE_DEVICE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateDeviceResponse {
+        /// Handle naming the newly created logical device.
+        pub device: Handle,
+    }
+
+    impl CreateDeviceResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.device.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                device: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`vk_op::GET_DEVICE_QUEUE`](super::vk_op::GET_DEVICE_QUEUE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct GetDeviceQueueRequest {
+        /// Handle naming the logical device the queue belongs to.
+        pub device: Handle,
+        /// Index of the queue family.
+        pub queue_family_index: u32,
+        /// Index of the queue within its family.
+        pub queue_index: u32,
+    }
+
+    impl GetDeviceQueueRequest {
+        /// Append the encoded body to `out`: a raw `u64` device handle followed
+        /// by the `u32` queue family index and `u32` queue index.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.device.raw().to_le_bytes());
+            out.extend_from_slice(&self.queue_family_index.to_le_bytes());
+            out.extend_from_slice(&self.queue_index.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                device: Handle::from_raw(r.u64()?),
+                queue_family_index: r.u32()?,
+                queue_index: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for [`vk_op::GET_DEVICE_QUEUE`](super::vk_op::GET_DEVICE_QUEUE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct GetDeviceQueueResponse {
+        /// Handle naming the retrieved queue.
+        pub queue: Handle,
+    }
+
+    impl GetDeviceQueueResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.queue.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                queue: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
 }
 
 /// The kind of a control-plane frame.
@@ -720,6 +817,66 @@ mod tests {
         truncated.extend_from_slice(&0u64.to_le_bytes());
         assert_eq!(
             vk::EnumeratePhysicalDevicesResponse::decode(&truncated),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn vk_create_device_roundtrip() {
+        let req = vk::CreateDeviceRequest {
+            physical_device: Handle::new(2, 1, 9),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::CreateDeviceRequest::decode(&b).expect("req"), req);
+
+        let resp = vk::CreateDeviceResponse {
+            device: Handle::new(3, 7, 11),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::CreateDeviceResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn vk_get_device_queue_roundtrip() {
+        let req = vk::GetDeviceQueueRequest {
+            device: Handle::new(3, 2, 4),
+            queue_family_index: 1,
+            queue_index: u32::MAX,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(vk::GetDeviceQueueRequest::decode(&b).expect("req"), req);
+
+        let resp = vk::GetDeviceQueueResponse {
+            queue: Handle::new(4, Handle::GENERATION_MAX, 0),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::GetDeviceQueueResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn vk_device_queue_bodies_reject_short_buffers() {
+        assert_eq!(
+            vk::CreateDeviceRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::CreateDeviceResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::GetDeviceQueueRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::GetDeviceQueueResponse::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }

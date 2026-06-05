@@ -16,6 +16,10 @@ use graftx_protocol as proto;
 const KIND_INSTANCE: u8 = 1;
 /// Server object kind for a `VkPhysicalDevice` handle.
 const KIND_PHYSICAL_DEVICE: u8 = 2;
+/// Server object kind for a `VkDevice` handle.
+const KIND_DEVICE: u8 = 3;
+/// Server object kind for a `VkQueue` handle.
+const KIND_QUEUE: u8 = 4;
 
 /// A handler for one API namespace (one [`ApiId`](proto::ApiId)).
 ///
@@ -53,19 +57,48 @@ struct PhysDevState {
     parent: proto::Handle,
 }
 
+/// Server-side state tracked for one created `VkDevice`.
+#[derive(Debug)]
+struct DeviceState {
+    /// The physical device this logical device was created from. Recorded for
+    /// lifetime/ownership checks; read only by tests for now.
+    #[allow(dead_code)]
+    physical_device: proto::Handle,
+}
+
+/// Server-side state tracked for one retrieved `VkQueue`.
+#[derive(Debug)]
+struct QueueState {
+    /// The logical device this queue belongs to. Recorded for
+    /// lifetime/ownership checks; read only by tests for now.
+    #[allow(dead_code)]
+    device: proto::Handle,
+    /// Index of the queue family this queue was requested from.
+    #[allow(dead_code)]
+    family: u32,
+    /// Index of the queue within its family.
+    #[allow(dead_code)]
+    index: u32,
+}
+
 /// Pure-Rust Vulkan backend stub.
 ///
 /// Owns generational handle tables for the Vulkan objects it tracks. It answers
 /// [`vk_op::CREATE_INSTANCE`](proto::vk_op::CREATE_INSTANCE) by minting an
 /// instance handle and [`vk_op::ENUMERATE_PHYSICAL_DEVICES`](proto::vk_op::ENUMERATE_PHYSICAL_DEVICES)
 /// by minting a single physical-device handle parented to a previously created
-/// instance. The real driver bridge lands in a later milestone; every other
-/// Vulkan call is reported as not-yet-implemented via
-/// [`ProtocolError::UnknownOpcode`](proto::ProtocolError::UnknownOpcode).
+/// instance. It also answers [`vk_op::CREATE_DEVICE`](proto::vk_op::CREATE_DEVICE)
+/// by minting a logical-device handle parented to a known physical device and
+/// [`vk_op::GET_DEVICE_QUEUE`](proto::vk_op::GET_DEVICE_QUEUE) by minting a queue
+/// handle parented to a known logical device. The real driver bridge lands in a
+/// later milestone; every other Vulkan call is reported as not-yet-implemented
+/// via [`ProtocolError::UnknownOpcode`](proto::ProtocolError::UnknownOpcode).
 #[derive(Default)]
 pub struct VulkanBackend {
     instances: HandleTable<InstanceState>,
     physical_devices: HandleTable<PhysDevState>,
+    devices: HandleTable<DeviceState>,
+    queues: HandleTable<QueueState>,
 }
 
 impl VulkanBackend {
@@ -75,6 +108,8 @@ impl VulkanBackend {
         Self {
             instances: HandleTable::new(),
             physical_devices: HandleTable::new(),
+            devices: HandleTable::new(),
+            queues: HandleTable::new(),
         }
     }
 }
@@ -129,6 +164,40 @@ impl Backend for VulkanBackend {
                 .encode(&mut out);
                 Ok(out)
             }
+            proto::vk_op::CREATE_DEVICE => {
+                let req = proto::vk::CreateDeviceRequest::decode(body)?;
+                // The physical device must have been minted by this backend.
+                if self.physical_devices.get(req.physical_device).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                let device = self.devices.insert(
+                    KIND_DEVICE,
+                    DeviceState {
+                        physical_device: req.physical_device,
+                    },
+                );
+                let mut out = Vec::new();
+                proto::vk::CreateDeviceResponse { device }.encode(&mut out);
+                Ok(out)
+            }
+            proto::vk_op::GET_DEVICE_QUEUE => {
+                let req = proto::vk::GetDeviceQueueRequest::decode(body)?;
+                // The logical device must have been created on this backend.
+                if self.devices.get(req.device).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                let queue = self.queues.insert(
+                    KIND_QUEUE,
+                    QueueState {
+                        device: req.device,
+                        family: req.queue_family_index,
+                        index: req.queue_index,
+                    },
+                );
+                let mut out = Vec::new();
+                proto::vk::GetDeviceQueueResponse { queue }.encode(&mut out);
+                Ok(out)
+            }
             // Everything else in the Vulkan namespace is not implemented yet.
             other => Err(proto::ProtocolError::UnknownOpcode(other)),
         }
@@ -151,6 +220,50 @@ mod tests {
         let mut body = Vec::new();
         proto::vk::EnumeratePhysicalDevicesRequest { instance }.encode(&mut body);
         body
+    }
+
+    /// Encode a `CREATE_DEVICE` request body for `physical_device`.
+    fn create_device_body(physical_device: proto::Handle) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::CreateDeviceRequest { physical_device }.encode(&mut body);
+        body
+    }
+
+    /// Encode a `GET_DEVICE_QUEUE` request body.
+    fn get_device_queue_body(
+        device: proto::Handle,
+        queue_family_index: u32,
+        queue_index: u32,
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::GetDeviceQueueRequest {
+            device,
+            queue_family_index,
+            queue_index,
+        }
+        .encode(&mut body);
+        body
+    }
+
+    /// Drive a backend through `CREATE_INSTANCE` then `ENUMERATE_PHYSICAL_DEVICES`,
+    /// returning the minted physical-device handle.
+    fn enumerate_one(backend: &mut VulkanBackend) -> proto::Handle {
+        let create_resp = backend
+            .handle(proto::vk_op::CREATE_INSTANCE, 1, &create_instance_body(0))
+            .expect("create instance should succeed");
+        let instance = proto::vk::CreateInstanceResponse::decode(&create_resp)
+            .expect("decode create response")
+            .instance;
+        let enum_resp = backend
+            .handle(
+                proto::vk_op::ENUMERATE_PHYSICAL_DEVICES,
+                2,
+                &enumerate_body(instance),
+            )
+            .expect("enumerate should succeed");
+        proto::vk::EnumeratePhysicalDevicesResponse::decode(&enum_resp)
+            .expect("decode enumerate response")
+            .devices[0]
     }
 
     #[test]
@@ -237,5 +350,88 @@ mod tests {
             .get(device)
             .expect("device state present");
         assert_eq!(state.parent.raw(), instance.raw());
+    }
+
+    #[test]
+    fn create_device_after_enumerate_returns_device_handle() {
+        let mut backend = VulkanBackend::new();
+        let physical_device = enumerate_one(&mut backend);
+
+        let resp = backend
+            .handle(
+                proto::vk_op::CREATE_DEVICE,
+                3,
+                &create_device_body(physical_device),
+            )
+            .expect("create device should succeed");
+
+        let decoded = proto::vk::CreateDeviceResponse::decode(&resp).expect("decode response");
+        assert_eq!(decoded.device.kind(), KIND_DEVICE);
+        assert!(backend.devices.get(decoded.device).is_some());
+        let state = backend
+            .devices
+            .get(decoded.device)
+            .expect("device state present");
+        assert_eq!(state.physical_device.raw(), physical_device.raw());
+    }
+
+    #[test]
+    fn create_device_with_bogus_physical_device_errors() {
+        let mut backend = VulkanBackend::new();
+        // A handle that was never minted by this backend.
+        let bogus = proto::Handle::new(KIND_PHYSICAL_DEVICE, 0, 999);
+        let err = backend
+            .handle(proto::vk_op::CREATE_DEVICE, 1, &create_device_body(bogus))
+            .expect_err("create device with bogus physical device must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn get_device_queue_after_create_device_returns_queue_handle() {
+        let mut backend = VulkanBackend::new();
+        let physical_device = enumerate_one(&mut backend);
+        let create_resp = backend
+            .handle(
+                proto::vk_op::CREATE_DEVICE,
+                3,
+                &create_device_body(physical_device),
+            )
+            .expect("create device should succeed");
+        let device = proto::vk::CreateDeviceResponse::decode(&create_resp)
+            .expect("decode create device response")
+            .device;
+
+        let resp = backend
+            .handle(
+                proto::vk_op::GET_DEVICE_QUEUE,
+                4,
+                &get_device_queue_body(device, 7, 2),
+            )
+            .expect("get device queue should succeed");
+
+        let decoded = proto::vk::GetDeviceQueueResponse::decode(&resp).expect("decode response");
+        assert_eq!(decoded.queue.kind(), KIND_QUEUE);
+        let state = backend
+            .queues
+            .get(decoded.queue)
+            .expect("queue state present");
+        assert_eq!(state.device.raw(), device.raw());
+        assert_eq!(state.family, 7);
+        assert_eq!(state.index, 2);
+    }
+
+    #[test]
+    fn get_device_queue_with_bogus_device_errors() {
+        let mut backend = VulkanBackend::new();
+        // A handle that was never created by this backend.
+        let bogus = proto::Handle::new(KIND_DEVICE, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::GET_DEVICE_QUEUE,
+                1,
+                &get_device_queue_body(bogus, 0, 0),
+            )
+            .expect_err("get device queue with bogus device must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
     }
 }
