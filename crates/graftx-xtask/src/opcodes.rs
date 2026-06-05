@@ -2,7 +2,8 @@
 //!
 //! The entries here mirror the opcode constants defined in `graftx-protocol`
 //! (`core_op::*`, `vk_op::*`, `gl_op::*`, `cuda_op::*`, `cl_op::*`, `hip_op::*`,
-//! `l0_op::*`, `video_op::*`, and `wgpu_op::*`). They are duplicated rather than
+//! `l0_op::*`, `video_op::*`, `wgpu_op::*`, `optix_op::*`, `sycl_op::*`, and
+//! `amf_op::*`). They are duplicated rather than
 //! imported so
 //! that `gen-opcodes` stays a leaf tool with no dependency on the protocol
 //! crate; the `check-xrefs` companion is responsible for catching drift.
@@ -36,7 +37,8 @@ impl OpcodeEntry {
 
 /// The canonical opcode list, in the order it should appear in the table:
 /// Core opcodes first, then Vulkan, OpenGL, CUDA, OpenCL, HIP, Level Zero,
-/// Video, and WebGPU, each in ascending call-id order within its API.
+/// Video, WebGPU, OptiX, SYCL, and AMF, each in ascending call-id order within
+/// its API.
 pub const OPCODES: &[OpcodeEntry] = &[
     OpcodeEntry {
         api_name: "Core",
@@ -246,6 +248,60 @@ pub const OPCODES: &[OpcodeEntry] = &[
         api_name: "WebGpu",
         api_id: 0x08,
         name: "DESTROY_BUFFER",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "OptiX",
+        api_id: 0x09,
+        name: "CONTEXT_CREATE",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "OptiX",
+        api_id: 0x09,
+        name: "PIPELINE_CREATE",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "OptiX",
+        api_id: 0x09,
+        name: "DESTROY",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "Sycl",
+        api_id: 0x0A,
+        name: "QUEUE_CREATE",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "Sycl",
+        api_id: 0x0A,
+        name: "MALLOC_DEVICE",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "Sycl",
+        api_id: 0x0A,
+        name: "FREE",
+        call_id: 0x0003,
+    },
+    OpcodeEntry {
+        api_name: "Amf",
+        api_id: 0x0B,
+        name: "CREATE_ENCODER",
+        call_id: 0x0001,
+    },
+    OpcodeEntry {
+        api_name: "Amf",
+        api_id: 0x0B,
+        name: "ENCODE_FRAME",
+        call_id: 0x0002,
+    },
+    OpcodeEntry {
+        api_name: "Amf",
+        api_id: 0x0B,
+        name: "DESTROY_ENCODER",
         call_id: 0x0003,
     },
 ];
@@ -486,7 +542,7 @@ mod tests {
         // entry).
         let data_rows = table.lines().count() - 2;
         assert_eq!(data_rows, OPCODES.len());
-        assert_eq!(data_rows, 35);
+        assert_eq!(data_rows, 44);
     }
 
     #[test]
@@ -551,6 +607,9 @@ mod tests {
         let level_zero = table.find("| LevelZero |").expect("LevelZero row present");
         let video = table.find("| Video |").expect("Video row present");
         let webgpu = table.find("| WebGpu |").expect("WebGpu row present");
+        let optix = table.find("| OptiX |").expect("OptiX row present");
+        let sycl = table.find("| Sycl |").expect("Sycl row present");
+        let amf = table.find("| Amf |").expect("Amf row present");
         let total = table.find("| TOTAL |").expect("TOTAL row present");
         assert!(
             core < vulkan
@@ -561,9 +620,12 @@ mod tests {
                 && hip < level_zero
                 && level_zero < video
                 && video < webgpu
-                && webgpu < total,
+                && webgpu < optix
+                && optix < sycl
+                && sycl < amf
+                && amf < total,
             "rows should be ordered by api_id (Core, Vulkan, OpenGl, Cuda, \
-             OpenCl, Hip, LevelZero, Video, WebGpu, TOTAL):\n{table}"
+             OpenCl, Hip, LevelZero, Video, WebGpu, OptiX, Sycl, Amf, TOTAL):\n{table}"
         );
     }
 
@@ -598,6 +660,9 @@ mod tests {
         );
         assert!(*counts.get("Video").unwrap_or(&0) >= 3, "Video opcodes");
         assert!(*counts.get("WebGpu").unwrap_or(&0) >= 3, "WebGpu opcodes");
+        assert!(*counts.get("OptiX").unwrap_or(&0) >= 3, "OptiX opcodes");
+        assert!(*counts.get("Sycl").unwrap_or(&0) >= 3, "Sycl opcodes");
+        assert!(*counts.get("Amf").unwrap_or(&0) >= 3, "Amf opcodes");
     }
 
     #[test]
@@ -637,9 +702,9 @@ mod tests {
             "total should equal the opcode count ({}):\n{stats}",
             OPCODES.len()
         );
-        // Core, Vulkan, OpenGl, Cuda, OpenCl, Hip, LevelZero, Video, WebGpu —
-        // nine distinct APIs in the canonical list.
-        assert!(stats.contains("- Distinct APIs: 9"), "stats:\n{stats}");
+        // Core, Vulkan, OpenGl, Cuda, OpenCl, Hip, LevelZero, Video, WebGpu,
+        // OptiX, Sycl, Amf — twelve distinct APIs in the canonical list.
+        assert!(stats.contains("- Distinct APIs: 12"), "stats:\n{stats}");
     }
 
     #[test]
