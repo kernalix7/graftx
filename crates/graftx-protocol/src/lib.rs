@@ -140,6 +140,12 @@ pub mod vk_op {
     pub const CREATE_BUFFER: u32 = opcode(ApiId::Vulkan, 0x0011);
     /// `vkBindBufferMemory`: bind device memory to a buffer.
     pub const BIND_BUFFER_MEMORY: u32 = opcode(ApiId::Vulkan, 0x0012);
+    /// `vkCreateCommandPool`: create a command pool on a device.
+    pub const CREATE_COMMAND_POOL: u32 = opcode(ApiId::Vulkan, 0x0020);
+    /// `vkAllocateCommandBuffers`: allocate a command buffer from a pool.
+    pub const ALLOCATE_COMMAND_BUFFER: u32 = opcode(ApiId::Vulkan, 0x0021);
+    /// `vkQueueSubmit`: submit a command buffer to a queue.
+    pub const QUEUE_SUBMIT: u32 = opcode(ApiId::Vulkan, 0x0022);
 }
 
 /// OpenGL opcodes (under [`ApiId::OpenGl`]).
@@ -597,6 +603,132 @@ pub mod vk {
                 buffer: Handle::from_raw(r.u64()?),
                 memory: Handle::from_raw(r.u64()?),
                 offset: r.u64()?,
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`vk_op::CREATE_COMMAND_POOL`](super::vk_op::CREATE_COMMAND_POOL).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateCommandPoolRequest {
+        /// Handle naming the device the command pool is created on.
+        pub device: Handle,
+        /// Index of the queue family the pool's buffers are submitted to.
+        pub queue_family_index: u32,
+    }
+
+    impl CreateCommandPoolRequest {
+        /// Append the encoded body to `out`: a raw `u64` device handle followed
+        /// by the `u32` queue family index.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.device.raw().to_le_bytes());
+            out.extend_from_slice(&self.queue_family_index.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                device: Handle::from_raw(r.u64()?),
+                queue_family_index: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`vk_op::CREATE_COMMAND_POOL`](super::vk_op::CREATE_COMMAND_POOL).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateCommandPoolResponse {
+        /// Handle naming the newly created command pool.
+        pub pool: Handle,
+    }
+
+    impl CreateCommandPoolResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.pool.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                pool: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`vk_op::ALLOCATE_COMMAND_BUFFER`](super::vk_op::ALLOCATE_COMMAND_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AllocateCommandBufferRequest {
+        /// Handle naming the command pool the buffer is allocated from.
+        pub pool: Handle,
+    }
+
+    impl AllocateCommandBufferRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.pool.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                pool: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`vk_op::ALLOCATE_COMMAND_BUFFER`](super::vk_op::ALLOCATE_COMMAND_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AllocateCommandBufferResponse {
+        /// Handle naming the newly allocated command buffer.
+        pub command_buffer: Handle,
+    }
+
+    impl AllocateCommandBufferResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.command_buffer.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                command_buffer: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`vk_op::QUEUE_SUBMIT`](super::vk_op::QUEUE_SUBMIT).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct QueueSubmitRequest {
+        /// Handle naming the queue the command buffer is submitted to.
+        pub queue: Handle,
+        /// Handle naming the command buffer being submitted.
+        pub command_buffer: Handle,
+    }
+
+    impl QueueSubmitRequest {
+        /// Append the encoded body to `out`: a raw `u64` queue handle followed
+        /// by the raw `u64` command buffer handle.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.queue.raw().to_le_bytes());
+            out.extend_from_slice(&self.command_buffer.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                queue: Handle::from_raw(r.u64()?),
+                command_buffer: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -2495,6 +2627,105 @@ mod tests {
         );
         assert_eq!(
             vk::BindBufferMemoryRequest::decode(&[0u8; 23]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn vk_opcodes_command_buffer_in_vulkan_namespace() {
+        assert_eq!(opcode_api(vk_op::CREATE_COMMAND_POOL), ApiId::Vulkan as u8);
+        assert_eq!(
+            opcode_api(vk_op::ALLOCATE_COMMAND_BUFFER),
+            ApiId::Vulkan as u8
+        );
+        assert_eq!(opcode_api(vk_op::QUEUE_SUBMIT), ApiId::Vulkan as u8);
+        assert_eq!(opcode_call(vk_op::CREATE_COMMAND_POOL), 0x0020);
+        assert_eq!(opcode_call(vk_op::ALLOCATE_COMMAND_BUFFER), 0x0021);
+        assert_eq!(opcode_call(vk_op::QUEUE_SUBMIT), 0x0022);
+        assert_ne!(vk_op::CREATE_COMMAND_POOL, vk_op::ALLOCATE_COMMAND_BUFFER);
+        assert_ne!(vk_op::ALLOCATE_COMMAND_BUFFER, vk_op::QUEUE_SUBMIT);
+    }
+
+    #[test]
+    fn vk_create_command_pool_roundtrip() {
+        let req = vk::CreateCommandPoolRequest {
+            device: Handle::new(3, 2, 4),
+            queue_family_index: u32::MAX,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 12);
+        assert_eq!(vk::CreateCommandPoolRequest::decode(&b).expect("req"), req);
+
+        let resp = vk::CreateCommandPoolResponse {
+            pool: Handle::new(7, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(
+            vk::CreateCommandPoolResponse::decode(&b).expect("resp"),
+            resp
+        );
+    }
+
+    #[test]
+    fn vk_allocate_command_buffer_roundtrip() {
+        let req = vk::AllocateCommandBufferRequest {
+            pool: Handle::new(7, 3, 9),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(
+            vk::AllocateCommandBufferRequest::decode(&b).expect("req"),
+            req
+        );
+
+        let resp = vk::AllocateCommandBufferResponse {
+            command_buffer: Handle::new(8, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(
+            vk::AllocateCommandBufferResponse::decode(&b).expect("resp"),
+            resp
+        );
+    }
+
+    #[test]
+    fn vk_queue_submit_roundtrip() {
+        let req = vk::QueueSubmitRequest {
+            queue: Handle::new(4, 1, 2),
+            command_buffer: Handle::new(8, 6, 5),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(vk::QueueSubmitRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn vk_command_buffer_bodies_reject_short_buffers() {
+        assert_eq!(
+            vk::CreateCommandPoolRequest::decode(&[0u8; 11]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::CreateCommandPoolResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::AllocateCommandBufferRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::AllocateCommandBufferResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::QueueSubmitRequest::decode(&[0u8; 15]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
