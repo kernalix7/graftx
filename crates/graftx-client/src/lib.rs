@@ -14,6 +14,8 @@ use std::io;
 use graftx_protocol as proto;
 use graftx_transport::Transport;
 
+pub mod vk;
+
 /// Errors surfaced by the client session layer.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {

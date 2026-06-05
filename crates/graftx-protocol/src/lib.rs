@@ -106,6 +106,28 @@ pub mod core_op {
     pub const NOOP: u32 = opcode(ApiId::Core, 0x000003);
 }
 
+/// Vulkan opcodes (under [`ApiId::Vulkan`]).
+pub mod vk_op {
+    use super::{opcode, ApiId};
+
+    /// `vkCreateInstance`: create a Vulkan instance.
+    pub const CREATE_INSTANCE: u32 = opcode(ApiId::Vulkan, 0x0001);
+    /// `vkDestroyInstance`: destroy a Vulkan instance.
+    pub const DESTROY_INSTANCE: u32 = opcode(ApiId::Vulkan, 0x0002);
+    /// `vkEnumeratePhysicalDevices`: list the physical devices on an instance.
+    pub const ENUMERATE_PHYSICAL_DEVICES: u32 = opcode(ApiId::Vulkan, 0x0003);
+    /// `vkGetPhysicalDeviceProperties`: query a physical device's properties.
+    pub const GET_PHYSICAL_DEVICE_PROPERTIES: u32 = opcode(ApiId::Vulkan, 0x0004);
+    /// `vkCreateDevice`: create a logical device from a physical device.
+    pub const CREATE_DEVICE: u32 = opcode(ApiId::Vulkan, 0x0005);
+    /// `vkDestroyDevice`: destroy a logical device.
+    pub const DESTROY_DEVICE: u32 = opcode(ApiId::Vulkan, 0x0006);
+    /// `vkGetDeviceQueue`: retrieve a queue handle from a logical device.
+    pub const GET_DEVICE_QUEUE: u32 = opcode(ApiId::Vulkan, 0x0007);
+    /// `vkDeviceWaitIdle`: block until a logical device is idle.
+    pub const DEVICE_WAIT_IDLE: u32 = opcode(ApiId::Vulkan, 0x0008);
+}
+
 /// The kind of a control-plane frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -337,6 +359,12 @@ mod tests {
     fn core_opcodes_are_in_core_namespace() {
         assert_eq!(opcode_api(core_op::HELLO), ApiId::Core as u8);
         assert_eq!(opcode_api(core_op::NOOP), ApiId::Core as u8);
+    }
+
+    #[test]
+    fn vk_opcodes_are_in_vulkan_namespace() {
+        assert_eq!(opcode_api(vk_op::CREATE_INSTANCE), ApiId::Vulkan as u8);
+        assert_ne!(vk_op::CREATE_INSTANCE, vk_op::DESTROY_INSTANCE);
     }
 
     #[test]
