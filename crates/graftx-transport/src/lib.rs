@@ -13,10 +13,12 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 mod counting;
 mod null;
 mod stream;
+mod vecq;
 
 pub use counting::CountingTransport;
 pub use null::NullTransport;
 pub use stream::{StreamTransport, MAX_FRAME};
+pub use vecq::VecTransport;
 
 /// A bidirectional, message-framed byte channel between two endpoints.
 pub trait Transport {
