@@ -146,6 +146,18 @@ pub mod gl_op {
     pub const GEN_BUFFER: u32 = opcode(ApiId::OpenGl, 0x0003);
 }
 
+/// CUDA opcodes (under [`ApiId::Cuda`]).
+pub mod cuda_op {
+    use super::{opcode, ApiId};
+
+    /// `cuCtxCreate`: create a CUDA context on a device.
+    pub const CTX_CREATE: u32 = opcode(ApiId::Cuda, 0x0001);
+    /// `cuMemAlloc`: allocate a block of device memory in a context.
+    pub const MEM_ALLOC: u32 = opcode(ApiId::Cuda, 0x0002);
+    /// `cuMemFree`: free a previously allocated device pointer.
+    pub const MEM_FREE: u32 = opcode(ApiId::Cuda, 0x0003);
+}
+
 /// Vulkan request/response body encoders and decoders.
 ///
 /// These match the canonical wire bodies for the Vulkan opcodes in [`vk_op`].
@@ -583,6 +595,136 @@ pub mod gl {
             let mut r = Reader::new(buf);
             Ok(Self {
                 buffer: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// CUDA request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the CUDA opcodes in [`cuda_op`].
+/// Every multi-byte field is little-endian and a [`Handle`] is carried as its
+/// raw 64-bit value (see [`Handle::raw`]). Short buffers decode to
+/// [`ProtocolError::UnexpectedEof`].
+///
+/// [`cuda_op::MEM_FREE`](super::cuda_op::MEM_FREE) replies with an empty (ack)
+/// body, so its response needs no struct here.
+pub mod cuda {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Request body for [`cuda_op::CTX_CREATE`](super::cuda_op::CTX_CREATE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CtxCreateRequest {
+        /// Ordinal of the device the context is created on.
+        pub device_ordinal: u32,
+    }
+
+    impl CtxCreateRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.device_ordinal.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                device_ordinal: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for [`cuda_op::CTX_CREATE`](super::cuda_op::CTX_CREATE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CtxCreateResponse {
+        /// Handle naming the newly created context.
+        pub context: Handle,
+    }
+
+    impl CtxCreateResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`cuda_op::MEM_ALLOC`](super::cuda_op::MEM_ALLOC).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemAllocRequest {
+        /// Handle naming the context the memory is allocated in.
+        pub context: Handle,
+        /// Size of the allocation in bytes.
+        pub size: u64,
+    }
+
+    impl MemAllocRequest {
+        /// Append the encoded body to `out`: a raw `u64` context handle followed
+        /// by the `u64` allocation size.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+            out.extend_from_slice(&self.size.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+                size: r.u64()?,
+            })
+        }
+    }
+
+    /// Response body for [`cuda_op::MEM_ALLOC`](super::cuda_op::MEM_ALLOC).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemAllocResponse {
+        /// Handle naming the newly allocated device pointer.
+        pub dptr: Handle,
+    }
+
+    impl MemAllocResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.dptr.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                dptr: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`cuda_op::MEM_FREE`](super::cuda_op::MEM_FREE).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemFreeRequest {
+        /// Handle naming the device pointer being freed.
+        pub dptr: Handle,
+    }
+
+    impl MemFreeRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.dptr.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                dptr: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -1291,6 +1433,92 @@ mod tests {
         );
         assert_eq!(
             vk::BindBufferMemoryRequest::decode(&[0u8; 23]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn cuda_opcodes_are_in_cuda_namespace() {
+        assert_eq!(opcode_api(cuda_op::CTX_CREATE), ApiId::Cuda as u8);
+        assert_eq!(opcode_api(cuda_op::MEM_ALLOC), ApiId::Cuda as u8);
+        assert_eq!(opcode_api(cuda_op::MEM_FREE), ApiId::Cuda as u8);
+        assert_eq!(opcode_call(cuda_op::CTX_CREATE), 0x0001);
+        assert_eq!(opcode_call(cuda_op::MEM_ALLOC), 0x0002);
+        assert_eq!(opcode_call(cuda_op::MEM_FREE), 0x0003);
+        assert_ne!(cuda_op::CTX_CREATE, cuda_op::MEM_ALLOC);
+        assert_ne!(cuda_op::MEM_ALLOC, cuda_op::MEM_FREE);
+    }
+
+    #[test]
+    fn cuda_ctx_create_roundtrip() {
+        let req = cuda::CtxCreateRequest {
+            device_ordinal: 0xDEAD_BEEF,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 4);
+        assert_eq!(cuda::CtxCreateRequest::decode(&b).expect("req"), req);
+
+        let resp = cuda::CtxCreateResponse {
+            context: Handle::new(7, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(cuda::CtxCreateResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn cuda_mem_alloc_roundtrip() {
+        let req = cuda::MemAllocRequest {
+            context: Handle::new(7, 2, 4),
+            size: 0x1234_5678_9ABC_DEF0,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(cuda::MemAllocRequest::decode(&b).expect("req"), req);
+
+        let resp = cuda::MemAllocResponse {
+            dptr: Handle::new(8, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(cuda::MemAllocResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn cuda_mem_free_roundtrip() {
+        let req = cuda::MemFreeRequest {
+            dptr: Handle::new(8, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(cuda::MemFreeRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn cuda_bodies_reject_short_buffers() {
+        assert_eq!(
+            cuda::CtxCreateRequest::decode(&[0u8; 3]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cuda::CtxCreateResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cuda::MemAllocRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cuda::MemAllocResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cuda::MemFreeRequest::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
