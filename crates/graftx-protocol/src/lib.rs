@@ -140,6 +140,10 @@ pub mod vk_op {
     pub const CREATE_BUFFER: u32 = opcode(ApiId::Vulkan, 0x0011);
     /// `vkBindBufferMemory`: bind device memory to a buffer.
     pub const BIND_BUFFER_MEMORY: u32 = opcode(ApiId::Vulkan, 0x0012);
+    /// `vkDestroyBuffer`: destroy a buffer object.
+    pub const DESTROY_BUFFER: u32 = opcode(ApiId::Vulkan, 0x0013);
+    /// `vkFreeMemory`: free a block of device memory.
+    pub const FREE_MEMORY: u32 = opcode(ApiId::Vulkan, 0x0014);
     /// `vkCreateCommandPool`: create a command pool on a device.
     pub const CREATE_COMMAND_POOL: u32 = opcode(ApiId::Vulkan, 0x0020);
     /// `vkAllocateCommandBuffers`: allocate a command buffer from a pool.
@@ -150,6 +154,8 @@ pub mod vk_op {
     pub const CMD_COPY_BUFFER: u32 = opcode(ApiId::Vulkan, 0x0023);
     /// `vkCmdDraw`: record a non-indexed draw into a command buffer.
     pub const CMD_DRAW: u32 = opcode(ApiId::Vulkan, 0x0024);
+    /// `vkDestroyCommandPool`: destroy a command pool on a device.
+    pub const DESTROY_COMMAND_POOL: u32 = opcode(ApiId::Vulkan, 0x0025);
 }
 
 /// OpenGL opcodes (under [`ApiId::OpenGl`]).
@@ -807,6 +813,79 @@ pub mod vk {
                 command_buffer: Handle::from_raw(r.u64()?),
                 vertex_count: r.u32()?,
                 instance_count: r.u32()?,
+            })
+        }
+    }
+
+    /// Request body for [`vk_op::DESTROY_BUFFER`](super::vk_op::DESTROY_BUFFER).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DestroyBufferRequest {
+        /// Handle naming the buffer being destroyed.
+        pub buffer: Handle,
+    }
+
+    impl DestroyBufferRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.buffer.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                buffer: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`vk_op::FREE_MEMORY`](super::vk_op::FREE_MEMORY).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct FreeMemoryRequest {
+        /// Handle naming the device memory being freed.
+        pub memory: Handle,
+    }
+
+    impl FreeMemoryRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.memory.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                memory: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`vk_op::DESTROY_COMMAND_POOL`](super::vk_op::DESTROY_COMMAND_POOL).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DestroyCommandPoolRequest {
+        /// Handle naming the command pool being destroyed.
+        pub pool: Handle,
+    }
+
+    impl DestroyCommandPoolRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.pool.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                pool: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -2853,6 +2932,68 @@ mod tests {
         );
         assert_eq!(
             vk::CmdDrawRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn vk_opcodes_destroy_free_in_vulkan_namespace() {
+        assert_eq!(opcode_api(vk_op::DESTROY_BUFFER), ApiId::Vulkan as u8);
+        assert_eq!(opcode_api(vk_op::FREE_MEMORY), ApiId::Vulkan as u8);
+        assert_eq!(opcode_api(vk_op::DESTROY_COMMAND_POOL), ApiId::Vulkan as u8);
+        assert_eq!(opcode_call(vk_op::DESTROY_BUFFER), 0x0013);
+        assert_eq!(opcode_call(vk_op::FREE_MEMORY), 0x0014);
+        assert_eq!(opcode_call(vk_op::DESTROY_COMMAND_POOL), 0x0025);
+        assert_ne!(vk_op::DESTROY_BUFFER, vk_op::FREE_MEMORY);
+        assert_ne!(vk_op::FREE_MEMORY, vk_op::DESTROY_COMMAND_POOL);
+        assert_ne!(vk_op::DESTROY_COMMAND_POOL, vk_op::CMD_DRAW);
+    }
+
+    #[test]
+    fn vk_destroy_buffer_roundtrip() {
+        let req = vk::DestroyBufferRequest {
+            buffer: Handle::new(6, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::DestroyBufferRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn vk_free_memory_roundtrip() {
+        let req = vk::FreeMemoryRequest {
+            memory: Handle::new(5, 4, 8),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::FreeMemoryRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn vk_destroy_command_pool_roundtrip() {
+        let req = vk::DestroyCommandPoolRequest {
+            pool: Handle::new(7, 3, 9),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::DestroyCommandPoolRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn vk_destroy_free_bodies_reject_short_buffers() {
+        assert_eq!(
+            vk::DestroyBufferRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::FreeMemoryRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::DestroyCommandPoolRequest::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
