@@ -21,6 +21,7 @@ pub mod hip;
 pub mod l0;
 pub mod video;
 pub mod vk;
+pub mod wgpu;
 
 /// Errors surfaced by the client session layer.
 #[derive(Debug, thiserror::Error)]

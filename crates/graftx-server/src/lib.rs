@@ -15,6 +15,7 @@ pub mod l0_backend;
 pub mod serve;
 pub mod session;
 pub mod video_backend;
+pub mod wgpu_backend;
 
 pub use backend::{Backend, VulkanBackend};
 pub use cl_backend::ClBackend;
@@ -25,3 +26,4 @@ pub use l0_backend::L0Backend;
 pub use serve::{serve, serve_tcp};
 pub use session::Session;
 pub use video_backend::VideoBackend;
+pub use wgpu_backend::WebGpuBackend;
