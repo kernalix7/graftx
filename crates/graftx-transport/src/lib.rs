@@ -48,6 +48,17 @@ pub fn loopback() -> (Loopback, Loopback) {
     )
 }
 
+/// Send `frame` then block for the peer's reply, returning the next received
+/// frame.
+///
+/// A request/response convenience for blocking clients that issue one message
+/// and wait for exactly one answer. Equivalent to [`Transport::send`] followed
+/// by [`Transport::recv`]; either step's error is propagated unchanged.
+pub fn roundtrip<T: Transport>(t: &mut T, frame: &[u8]) -> io::Result<Vec<u8>> {
+    t.send(frame)?;
+    t.recv()
+}
+
 impl Transport for Loopback {
     fn send(&mut self, frame: &[u8]) -> io::Result<()> {
         self.tx
@@ -80,5 +91,17 @@ mod tests {
         let (mut a, b) = loopback();
         drop(b);
         assert!(a.recv().is_err());
+    }
+
+    #[test]
+    fn roundtrip_returns_echoed_frame() {
+        let (mut client, mut server) = loopback();
+        let echo = std::thread::spawn(move || {
+            let frame = server.recv().expect("server recv");
+            server.send(&frame).expect("server echo");
+        });
+        let reply = roundtrip(&mut client, b"request").expect("roundtrip");
+        echo.join().expect("echo thread");
+        assert_eq!(reply, b"request");
     }
 }
