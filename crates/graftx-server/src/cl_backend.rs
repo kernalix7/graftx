@@ -239,11 +239,7 @@ mod tests {
         // A handle that was never created by this backend.
         let bogus = proto::Handle::new(KIND_CL_MEM, 0, 999);
         let err = backend
-            .handle(
-                proto::cl_op::RELEASE_BUFFER,
-                1,
-                &release_buffer_body(bogus),
-            )
+            .handle(proto::cl_op::RELEASE_BUFFER, 1, &release_buffer_body(bogus))
             .expect_err("release buffer with bogus mem must error");
         assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
     }
