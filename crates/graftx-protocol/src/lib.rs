@@ -158,6 +158,18 @@ pub mod cuda_op {
     pub const MEM_FREE: u32 = opcode(ApiId::Cuda, 0x0003);
 }
 
+/// HIP opcodes (under [`ApiId::Hip`]).
+pub mod hip_op {
+    use super::{opcode, ApiId};
+
+    /// `hipMalloc`: allocate a block of device memory.
+    pub const MALLOC: u32 = opcode(ApiId::Hip, 0x0001);
+    /// `hipFree`: free a previously allocated device pointer.
+    pub const FREE: u32 = opcode(ApiId::Hip, 0x0002);
+    /// `hipStreamCreate`: create an asynchronous stream.
+    pub const STREAM_CREATE: u32 = opcode(ApiId::Hip, 0x0003);
+}
+
 /// Vulkan request/response body encoders and decoders.
 ///
 /// These match the canonical wire bodies for the Vulkan opcodes in [`vk_op`].
@@ -725,6 +737,111 @@ pub mod cuda {
             let mut r = Reader::new(buf);
             Ok(Self {
                 dptr: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// HIP request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the HIP opcodes in [`hip_op`].
+/// Every multi-byte field is little-endian and a [`Handle`] is carried as its
+/// raw 64-bit value (see [`Handle::raw`]). Short buffers decode to
+/// [`ProtocolError::UnexpectedEof`].
+///
+/// [`hip_op::FREE`](super::hip_op::FREE) replies with an empty (ack) body, and
+/// [`hip_op::STREAM_CREATE`](super::hip_op::STREAM_CREATE) takes an empty
+/// request body, so neither needs a struct here.
+pub mod hip {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Request body for [`hip_op::MALLOC`](super::hip_op::MALLOC).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MallocRequest {
+        /// Size of the allocation in bytes.
+        pub size: u64,
+    }
+
+    impl MallocRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.size.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self { size: r.u64()? })
+        }
+    }
+
+    /// Response body for [`hip_op::MALLOC`](super::hip_op::MALLOC).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MallocResponse {
+        /// Handle naming the newly allocated device pointer.
+        pub dptr: Handle,
+    }
+
+    impl MallocResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.dptr.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                dptr: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`hip_op::FREE`](super::hip_op::FREE).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct FreeRequest {
+        /// Handle naming the device pointer being freed.
+        pub dptr: Handle,
+    }
+
+    impl FreeRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.dptr.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                dptr: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`hip_op::STREAM_CREATE`](super::hip_op::STREAM_CREATE).
+    ///
+    /// The request body is empty, so there is no request struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct StreamCreateResponse {
+        /// Handle naming the newly created stream.
+        pub stream: Handle,
+    }
+
+    impl StreamCreateResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.stream.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                stream: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -1519,6 +1636,79 @@ mod tests {
         );
         assert_eq!(
             cuda::MemFreeRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn hip_opcodes_are_in_hip_namespace() {
+        assert_eq!(opcode_api(hip_op::MALLOC), ApiId::Hip as u8);
+        assert_eq!(opcode_api(hip_op::FREE), ApiId::Hip as u8);
+        assert_eq!(opcode_api(hip_op::STREAM_CREATE), ApiId::Hip as u8);
+        assert_eq!(opcode_call(hip_op::MALLOC), 0x0001);
+        assert_eq!(opcode_call(hip_op::FREE), 0x0002);
+        assert_eq!(opcode_call(hip_op::STREAM_CREATE), 0x0003);
+        assert_ne!(hip_op::MALLOC, hip_op::FREE);
+        assert_ne!(hip_op::FREE, hip_op::STREAM_CREATE);
+    }
+
+    #[test]
+    fn hip_malloc_roundtrip() {
+        let req = hip::MallocRequest {
+            size: 0x1234_5678_9ABC_DEF0,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(hip::MallocRequest::decode(&b).expect("req"), req);
+
+        let resp = hip::MallocResponse {
+            dptr: Handle::new(8, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(hip::MallocResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn hip_free_roundtrip() {
+        let req = hip::FreeRequest {
+            dptr: Handle::new(8, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(hip::FreeRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn hip_stream_create_roundtrip() {
+        let resp = hip::StreamCreateResponse {
+            stream: Handle::new(9, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(hip::StreamCreateResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn hip_bodies_reject_short_buffers() {
+        assert_eq!(
+            hip::MallocRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            hip::MallocResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            hip::FreeRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            hip::StreamCreateResponse::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
