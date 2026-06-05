@@ -16,6 +16,7 @@ use graftx_transport::Transport;
 
 pub mod cuda;
 pub mod gl;
+pub mod hip;
 pub mod vk;
 
 /// Errors surfaced by the client session layer.
