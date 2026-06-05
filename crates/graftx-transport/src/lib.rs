@@ -10,8 +10,10 @@
 use std::io;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
+mod counting;
 mod stream;
 
+pub use counting::CountingTransport;
 pub use stream::{StreamTransport, MAX_FRAME};
 
 /// A bidirectional, message-framed byte channel between two endpoints.
