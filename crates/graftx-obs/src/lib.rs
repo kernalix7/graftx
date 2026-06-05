@@ -8,6 +8,13 @@
 //! The counters use saturating arithmetic so a long-lived server cannot panic
 //! on overflow; statistics are best-effort and clamping at `u64::MAX` is the
 //! intended behaviour rather than wrapping or aborting.
+//!
+//! For aggregating statistics across many APIs and threads, see the
+//! [`ObsRegistry`] in the [`registry`] module.
+
+mod registry;
+
+pub use registry::ObsRegistry;
 
 /// Accumulated statistics for a stream of GraftX calls.
 ///
