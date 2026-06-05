@@ -61,6 +61,15 @@ belongs in `../`, not here.
   and the introspection/quota API (`len`/`iter`/`iter_kind`/`count_by_kind`/
   `capacity`/`retired`/`is_live`/`kinds`/`stats`/`try_insert`/`clear`/`retain`),
   as implemented in `crates/graftx-protocol` and `crates/graftx-handles`.
+- [`OBSERVABILITY.md`](OBSERVABILITY.md) — observability reference: the
+  `CallStats` accumulator, the thread-safe `ObsRegistry` (per-API
+  call/byte/latency aggregation, `snapshot`/`total`/`report`/`to_json`/
+  `record_frame`/`record_latency` and the process-global `global()` default),
+  the `CallGuard` RAII span-and-record helper, the `Timer`/`time_call`
+  stopwatch, the `LatencyHist` microsecond histogram, `tracing` integration
+  (`call_span` and the optional `fmt`-feature `install()`), and how
+  `serve_with_metrics` feeds the registry per call, as implemented in
+  `crates/graftx-obs` and `crates/graftx-server`.
 
 Protocol and transport design specs are covered in detail by the implementation
 plan ([`plan/06-protocol.md`](plan/06-protocol.md),
