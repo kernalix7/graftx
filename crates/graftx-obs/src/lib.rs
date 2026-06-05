@@ -62,6 +62,29 @@ pub fn call_span(api: &str, opcode: u32) -> tracing::Span {
     tracing::info_span!("graftx.call", api, opcode)
 }
 
+/// Install a `tracing-subscriber` fmt subscriber as the global default.
+///
+/// Returns `true` if this call installed the subscriber and `false` if a
+/// global default was already set. This is a convenience for binaries that
+/// want default human-readable logging without wiring up `tracing-subscriber`
+/// themselves; it never panics, so it is safe to call from `main` or tests.
+///
+/// Only available when the `fmt` feature is enabled.
+#[cfg(feature = "fmt")]
+pub fn install() -> bool {
+    tracing_subscriber::fmt().try_init().is_ok()
+}
+
+/// Stub used when the `fmt` feature is disabled.
+///
+/// Always returns `false`: no subscriber is installed because the optional
+/// `tracing-subscriber` dependency is not compiled in. Keeping the function
+/// present means callers can refer to [`install`] regardless of features.
+#[cfg(not(feature = "fmt"))]
+pub fn install() -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +166,15 @@ mod tests {
                 bytes_in: u64::MAX,
             }
         );
+    }
+
+    #[test]
+    fn install_returns_bool_without_panicking() {
+        // Without the `fmt` feature this is always `false`; with the feature it
+        // is `true` only when no global subscriber is already set. Either way
+        // the call must not panic. Bind the result so the contract is explicit.
+        let installed: bool = install();
+        let _ = installed;
     }
 
     #[test]
