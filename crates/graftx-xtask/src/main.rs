@@ -72,6 +72,10 @@ fn run(args: &[String]) -> ExitCode {
             print!("{}", opcodes::render_apis(opcodes::OPCODES));
             ExitCode::SUCCESS
         }
+        "summary" => {
+            print!("{}", opcodes::render_summary(opcodes::OPCODES));
+            ExitCode::SUCCESS
+        }
         "opcodes-lock" => opcodes_lock(&args[1..], Path::new(OPCODES_LOCK)),
         "opcodes-md" => opcodes_md(&args[1..], Path::new(OPCODES_MD)),
         "verify" => verify(
@@ -366,6 +370,7 @@ Subcommands:
     coverage       Summarize opcode coverage per API as a Markdown roll-up
     stats          Print opcode totals, distinct API count, and per-API roll-up
     apis           List the distinct API ids and names as a Markdown table
+    summary        Print a combined headline plus the apis and coverage tables
     opcodes-lock   Freeze (--write) or verify (--check, default) the opcode lock
     opcodes-md     Write (--write) or verify (--check, default) docs/design/OPCODES.md
     check-xrefs    Validate cross-references between the docs and the protocol
@@ -414,6 +419,11 @@ mod tests {
     #[test]
     fn apis_succeeds() {
         assert_eq!(run(&argv(&["apis"])), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn summary_succeeds() {
+        assert_eq!(run(&argv(&["summary"])), ExitCode::SUCCESS);
     }
 
     #[test]

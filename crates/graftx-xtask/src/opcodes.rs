@@ -463,6 +463,40 @@ pub fn render_apis(entries: &[OpcodeEntry]) -> String {
     out
 }
 
+/// Render a combined overview of `entries`: a one-line headline naming the total
+/// opcode count and the number of distinct APIs, then the API listing
+/// ([`render_apis`]) and the per-API coverage roll-up ([`render_coverage`]).
+///
+/// Pure and deterministic. The two sub-tables are reused verbatim — separated by
+/// a blank line so each renders as its own Markdown table — so the summary never
+/// drifts from the standalone `apis` and `coverage` subcommands, and the
+/// distinct-API count is computed the same way [`render_stats`] groups them
+/// (unique `(api_id, api_name)` pairs). The output ends with a trailing newline so
+/// it composes cleanly with files or stdout.
+pub fn render_summary(entries: &[OpcodeEntry]) -> String {
+    let total = entries.len();
+    // Count distinct (api_id, api_name) pairs the same way `render_stats` and
+    // the table renderers below group them, so the headline agrees with the
+    // number of rows in each sub-table.
+    let mut seen: Vec<(u8, &'static str)> = Vec::new();
+    for entry in entries {
+        let key = (entry.api_id, entry.api_name);
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    let distinct_apis = seen.len();
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Opcode summary: {total} opcode(s) across {distinct_apis} API(s)\n\n"
+    ));
+    out.push_str(&render_apis(entries));
+    out.push('\n');
+    out.push_str(&render_coverage(entries));
+    out
+}
+
 /// Header comment written at the top of the opcode lockfile.
 ///
 /// The lockfile is generated; the comment says so and points at the command
@@ -872,6 +906,54 @@ mod tests {
     #[test]
     fn apis_ends_with_newline() {
         assert!(render_apis(OPCODES).ends_with('\n'));
+    }
+
+    #[test]
+    fn summary_has_headline_and_both_subtable_headers() {
+        let summary = render_summary(OPCODES);
+        // The headline names the total opcode count and the distinct-API count.
+        assert!(
+            summary.contains(&format!(
+                "Opcode summary: {} opcode(s) across 12 API(s)",
+                OPCODES.len()
+            )),
+            "summary headline should report totals:\n{summary}"
+        );
+        // Both sub-tables are embedded, identified by their header rows.
+        assert!(
+            summary.contains("| ApiId | API |\n"),
+            "summary should embed the apis table header:\n{summary}"
+        );
+        assert!(
+            summary.contains("| API | Opcodes |\n"),
+            "summary should embed the coverage table header:\n{summary}"
+        );
+        // The TOTAL row from the coverage roll-up agrees with the headline count.
+        assert!(
+            summary.contains(&format!("| TOTAL | {} |", OPCODES.len())),
+            "summary coverage TOTAL should match the opcode count:\n{summary}"
+        );
+    }
+
+    #[test]
+    fn summary_orders_headline_then_apis_then_coverage() {
+        let summary = render_summary(OPCODES);
+        let headline = summary.find("Opcode summary:").expect("headline present");
+        let apis = summary
+            .find("| ApiId | API |")
+            .expect("apis header present");
+        let coverage = summary
+            .find("| API | Opcodes |")
+            .expect("coverage header present");
+        assert!(
+            headline < apis && apis < coverage,
+            "summary should be headline, then apis, then coverage:\n{summary}"
+        );
+    }
+
+    #[test]
+    fn summary_ends_with_newline() {
+        assert!(render_summary(OPCODES).ends_with('\n'));
     }
 
     #[test]
