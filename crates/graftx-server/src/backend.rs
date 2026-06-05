@@ -153,9 +153,13 @@ struct CommandBufferState {
 /// instance. It also answers [`vk_op::CREATE_DEVICE`](proto::vk_op::CREATE_DEVICE)
 /// by minting a logical-device handle parented to a known physical device and
 /// [`vk_op::GET_DEVICE_QUEUE`](proto::vk_op::GET_DEVICE_QUEUE) by minting a queue
-/// handle parented to a known logical device. The real driver bridge lands in a
-/// later milestone; every other Vulkan call is reported as not-yet-implemented
-/// via [`ProtocolError::UnknownOpcode`](proto::ProtocolError::UnknownOpcode).
+/// handle parented to a known logical device. It also answers the teardown
+/// opcodes [`vk_op::DESTROY_BUFFER`](proto::vk_op::DESTROY_BUFFER),
+/// [`vk_op::FREE_MEMORY`](proto::vk_op::FREE_MEMORY), and
+/// [`vk_op::DESTROY_COMMAND_POOL`](proto::vk_op::DESTROY_COMMAND_POOL) by
+/// removing the named object from its table and acknowledging. The real driver
+/// bridge lands in a later milestone; every other Vulkan call is reported as
+/// not-yet-implemented via [`ProtocolError::UnknownOpcode`](proto::ProtocolError::UnknownOpcode).
 #[derive(Default)]
 pub struct VulkanBackend {
     instances: HandleTable<InstanceState>,
@@ -391,6 +395,30 @@ impl Backend for VulkanBackend {
                 state.recorded = state.recorded.saturating_add(1);
                 Ok(Vec::new())
             }
+            proto::vk_op::DESTROY_BUFFER => {
+                let req = proto::vk::DestroyBufferRequest::decode(body)?;
+                // The buffer must have been created on this backend; remove it.
+                if self.buffers.remove(req.buffer).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                Ok(Vec::new())
+            }
+            proto::vk_op::FREE_MEMORY => {
+                let req = proto::vk::FreeMemoryRequest::decode(body)?;
+                // The memory must have been allocated on this backend; free it.
+                if self.memories.remove(req.memory).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                Ok(Vec::new())
+            }
+            proto::vk_op::DESTROY_COMMAND_POOL => {
+                let req = proto::vk::DestroyCommandPoolRequest::decode(body)?;
+                // The command pool must have been created on this backend; remove it.
+                if self.command_pools.remove(req.pool).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                Ok(Vec::new())
+            }
             // Everything else in the Vulkan namespace is not implemented yet.
             other => Err(proto::ProtocolError::UnknownOpcode(other)),
         }
@@ -517,6 +545,27 @@ mod tests {
             size,
         }
         .encode(&mut body);
+        body
+    }
+
+    /// Encode a `DESTROY_BUFFER` request body.
+    fn destroy_buffer_body(buffer: proto::Handle) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::DestroyBufferRequest { buffer }.encode(&mut body);
+        body
+    }
+
+    /// Encode a `FREE_MEMORY` request body.
+    fn free_memory_body(memory: proto::Handle) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::FreeMemoryRequest { memory }.encode(&mut body);
+        body
+    }
+
+    /// Encode a `DESTROY_COMMAND_POOL` request body.
+    fn destroy_command_pool_body(pool: proto::Handle) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::DestroyCommandPoolRequest { pool }.encode(&mut body);
         body
     }
 
@@ -1372,6 +1421,132 @@ mod tests {
         let err = backend
             .handle(proto::vk_op::CMD_DRAW, 12, &cmd_draw_body(bogus, 3, 1))
             .expect_err("cmd draw with bogus command buffer must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn destroy_buffer_removes_and_acks() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+        let buffer = create_buffer_one(&mut backend, device);
+
+        let ack = backend
+            .handle(
+                proto::vk_op::DESTROY_BUFFER,
+                14,
+                &destroy_buffer_body(buffer),
+            )
+            .expect("destroy buffer should succeed");
+        // The reply is an empty ack body.
+        assert!(ack.is_empty());
+        // The buffer no longer resolves in its table.
+        assert!(backend.buffers.get(buffer).is_none());
+    }
+
+    #[test]
+    fn destroy_buffer_with_bogus_handle_errors() {
+        let mut backend = VulkanBackend::new();
+        // A buffer handle that was never minted by this backend.
+        let bogus = proto::Handle::new(KIND_BUFFER, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::DESTROY_BUFFER,
+                14,
+                &destroy_buffer_body(bogus),
+            )
+            .expect_err("destroy buffer with bogus handle must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn destroy_buffer_twice_errors_on_second() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+        let buffer = create_buffer_one(&mut backend, device);
+
+        backend
+            .handle(
+                proto::vk_op::DESTROY_BUFFER,
+                14,
+                &destroy_buffer_body(buffer),
+            )
+            .expect("first destroy should succeed");
+        // A second destroy of the same handle must error: it is already gone.
+        let err = backend
+            .handle(
+                proto::vk_op::DESTROY_BUFFER,
+                15,
+                &destroy_buffer_body(buffer),
+            )
+            .expect_err("second destroy must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn free_memory_removes_and_acks() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+        let mem_resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_MEMORY,
+                5,
+                &allocate_memory_body(device, 4096),
+            )
+            .expect("allocate memory should succeed");
+        let memory = proto::vk::AllocateMemoryResponse::decode(&mem_resp)
+            .expect("decode memory response")
+            .memory;
+
+        let ack = backend
+            .handle(proto::vk_op::FREE_MEMORY, 16, &free_memory_body(memory))
+            .expect("free memory should succeed");
+        // The reply is an empty ack body.
+        assert!(ack.is_empty());
+        // The memory no longer resolves in its table.
+        assert!(backend.memories.get(memory).is_none());
+    }
+
+    #[test]
+    fn free_memory_with_bogus_handle_errors() {
+        let mut backend = VulkanBackend::new();
+        // A memory handle that was never allocated by this backend.
+        let bogus = proto::Handle::new(KIND_DEVICE_MEMORY, 0, 999);
+        let err = backend
+            .handle(proto::vk_op::FREE_MEMORY, 16, &free_memory_body(bogus))
+            .expect_err("free memory with bogus handle must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn destroy_command_pool_removes_and_acks() {
+        let mut backend = VulkanBackend::new();
+        let (_device, pool) = create_command_pool_one(&mut backend);
+
+        let ack = backend
+            .handle(
+                proto::vk_op::DESTROY_COMMAND_POOL,
+                17,
+                &destroy_command_pool_body(pool),
+            )
+            .expect("destroy command pool should succeed");
+        // The reply is an empty ack body.
+        assert!(ack.is_empty());
+        // The pool no longer resolves in its table.
+        assert!(backend.command_pools.get(pool).is_none());
+    }
+
+    #[test]
+    fn destroy_command_pool_with_bogus_handle_errors() {
+        let mut backend = VulkanBackend::new();
+        // A command pool handle that was never minted by this backend.
+        let bogus = proto::Handle::new(KIND_COMMAND_POOL, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::DESTROY_COMMAND_POOL,
+                17,
+                &destroy_command_pool_body(bogus),
+            )
+            .expect_err("destroy command pool with bogus handle must error");
         assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
     }
 }

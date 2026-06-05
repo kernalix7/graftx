@@ -38,9 +38,12 @@ struct BufState {
 /// handle, [`gl_op::MAKE_CURRENT`](proto::gl_op::MAKE_CURRENT) by validating a
 /// known context and acknowledging with an empty body, and
 /// [`gl_op::GEN_BUFFER`](proto::gl_op::GEN_BUFFER) by minting a buffer handle
-/// parented to a known context. The real driver bridge lands in a later
-/// milestone; every other OpenGL call is reported as not-yet-implemented via
-/// [`ProtocolError::UnknownOpcode`](proto::ProtocolError::UnknownOpcode).
+/// parented to a known context. It answers
+/// [`gl_op::SWAP_BUFFERS`](proto::gl_op::SWAP_BUFFERS) by validating a known
+/// context and acknowledging, and [`gl_op::DELETE_BUFFER`](proto::gl_op::DELETE_BUFFER)
+/// by removing a known buffer from its table. The real driver bridge lands in a
+/// later milestone; every other OpenGL call is reported as not-yet-implemented
+/// via [`ProtocolError::UnknownOpcode`](proto::ProtocolError::UnknownOpcode).
 #[derive(Default)]
 pub struct GlBackend {
     contexts: HandleTable<CtxState>,
@@ -117,6 +120,27 @@ impl Backend for GlBackend {
                 proto::gl::GenBufferResponse { buffer }.encode(&mut out);
                 Ok(out)
             }
+            proto::gl_op::SWAP_BUFFERS => {
+                let req = proto::gl::SwapBuffersRequest::decode(body)?;
+                // The context must have been created and still be live here.
+                let live = self
+                    .contexts
+                    .get(req.context)
+                    .is_some_and(|state| state.created);
+                if !live {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                // Acknowledge with an empty body.
+                Ok(Vec::new())
+            }
+            proto::gl_op::DELETE_BUFFER => {
+                let req = proto::gl::DeleteBufferRequest::decode(body)?;
+                // The buffer must have been generated on this backend; remove it.
+                if self.buffers.remove(req.buffer).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                Ok(Vec::new())
+            }
             // Everything else in the OpenGL namespace is not implemented yet.
             other => Err(proto::ProtocolError::UnknownOpcode(other)),
         }
@@ -139,6 +163,30 @@ mod tests {
         let mut body = Vec::new();
         proto::gl::GenBufferRequest { context }.encode(&mut body);
         body
+    }
+
+    /// Encode a `SWAP_BUFFERS` request body for `context`.
+    fn swap_buffers_body(context: proto::Handle) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::gl::SwapBuffersRequest { context }.encode(&mut body);
+        body
+    }
+
+    /// Encode a `DELETE_BUFFER` request body for `buffer`.
+    fn delete_buffer_body(buffer: proto::Handle) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::gl::DeleteBufferRequest { buffer }.encode(&mut body);
+        body
+    }
+
+    /// Generate a buffer on `context`, returning its minted handle.
+    fn gen_buffer_one(backend: &mut GlBackend, context: proto::Handle) -> proto::Handle {
+        let resp = backend
+            .handle(proto::gl_op::GEN_BUFFER, 3, &gen_buffer_body(context))
+            .expect("gen buffer should succeed");
+        proto::gl::GenBufferResponse::decode(&resp)
+            .expect("decode gen buffer response")
+            .buffer
     }
 
     /// Drive a backend through `CREATE_CONTEXT`, returning the minted handle.
@@ -223,5 +271,69 @@ mod tests {
             .handle(0, 1, &[])
             .expect_err("non-opengl opcode must error");
         assert!(matches!(err, proto::ProtocolError::UnknownOpcode(0)));
+    }
+
+    #[test]
+    fn swap_buffers_after_create_returns_empty_ack() {
+        let mut backend = GlBackend::new();
+        let context = create_context(&mut backend);
+
+        let resp = backend
+            .handle(proto::gl_op::SWAP_BUFFERS, 4, &swap_buffers_body(context))
+            .expect("swap buffers should succeed");
+        assert!(resp.is_empty());
+    }
+
+    #[test]
+    fn swap_buffers_with_bogus_context_errors() {
+        let mut backend = GlBackend::new();
+        // A handle that was never issued by this backend.
+        let bogus = proto::Handle::new(KIND_GL_CONTEXT, 0, 999);
+        let err = backend
+            .handle(proto::gl_op::SWAP_BUFFERS, 4, &swap_buffers_body(bogus))
+            .expect_err("swap buffers with bogus context must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn delete_buffer_removes_and_acks() {
+        let mut backend = GlBackend::new();
+        let context = create_context(&mut backend);
+        let buffer = gen_buffer_one(&mut backend, context);
+
+        let resp = backend
+            .handle(proto::gl_op::DELETE_BUFFER, 5, &delete_buffer_body(buffer))
+            .expect("delete buffer should succeed");
+        // The reply is an empty ack body.
+        assert!(resp.is_empty());
+        // The buffer no longer resolves in its table.
+        assert!(backend.buffers.get(buffer).is_none());
+    }
+
+    #[test]
+    fn delete_buffer_with_bogus_handle_errors() {
+        let mut backend = GlBackend::new();
+        // A buffer handle that was never generated by this backend.
+        let bogus = proto::Handle::new(KIND_GL_BUFFER, 0, 999);
+        let err = backend
+            .handle(proto::gl_op::DELETE_BUFFER, 5, &delete_buffer_body(bogus))
+            .expect_err("delete buffer with bogus handle must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn delete_buffer_twice_errors_on_second() {
+        let mut backend = GlBackend::new();
+        let context = create_context(&mut backend);
+        let buffer = gen_buffer_one(&mut backend, context);
+
+        backend
+            .handle(proto::gl_op::DELETE_BUFFER, 5, &delete_buffer_body(buffer))
+            .expect("first delete should succeed");
+        // A second delete of the same handle must error: it is already gone.
+        let err = backend
+            .handle(proto::gl_op::DELETE_BUFFER, 6, &delete_buffer_body(buffer))
+            .expect_err("second delete must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
     }
 }
