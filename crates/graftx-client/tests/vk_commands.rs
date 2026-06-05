@@ -116,6 +116,93 @@ fn queue_submit_acknowledges() {
 }
 
 #[test]
+fn cmd_copy_buffer_acknowledges() {
+    let (mut client, mut server) = loopback();
+    let command_buffer = proto::Handle::new(KIND_COMMAND_BUFFER, 1, 99);
+    let src = proto::Handle::new(6, 1, 10);
+    let dst = proto::Handle::new(6, 1, 11);
+
+    let responder = thread::spawn(move || {
+        let frame = server.recv().expect("responder recv");
+        let body = expect_request(&frame, proto::vk_op::CMD_COPY_BUFFER);
+        let req = proto::vk::CmdCopyBufferRequest::decode(&body).expect("decode req body");
+        assert_eq!(req.command_buffer, command_buffer);
+        assert_eq!(req.src, src);
+        assert_eq!(req.dst, dst);
+        assert_eq!(req.size, 256);
+        let (h, _) = proto::decode_frame(&frame).expect("decode request header");
+
+        // CmdCopyBuffer's reply is an empty ack body.
+        server
+            .send(&response_frame(&h, &[]))
+            .expect("responder send");
+    });
+
+    vk::cmd_copy_buffer(&mut client, command_buffer, src, dst, 256, 11, 4)
+        .expect("cmd_copy_buffer");
+    responder.join().expect("responder thread");
+}
+
+#[test]
+fn cmd_draw_acknowledges() {
+    let (mut client, mut server) = loopback();
+    let command_buffer = proto::Handle::new(KIND_COMMAND_BUFFER, 1, 99);
+
+    let responder = thread::spawn(move || {
+        let frame = server.recv().expect("responder recv");
+        let body = expect_request(&frame, proto::vk_op::CMD_DRAW);
+        let req = proto::vk::CmdDrawRequest::decode(&body).expect("decode req body");
+        assert_eq!(req.command_buffer, command_buffer);
+        assert_eq!(req.vertex_count, 3);
+        assert_eq!(req.instance_count, 1);
+        let (h, _) = proto::decode_frame(&frame).expect("decode request header");
+
+        // CmdDraw's reply is an empty ack body.
+        server
+            .send(&response_frame(&h, &[]))
+            .expect("responder send");
+    });
+
+    vk::cmd_draw(&mut client, command_buffer, 3, 1, 12, 5).expect("cmd_draw");
+    responder.join().expect("responder thread");
+}
+
+#[test]
+fn cmd_draw_rejects_wrong_opcode() {
+    let (mut client, mut server) = loopback();
+    let command_buffer = proto::Handle::new(KIND_COMMAND_BUFFER, 1, 99);
+
+    let responder = thread::spawn(move || {
+        let frame = server.recv().expect("responder recv");
+        let (h, _) = proto::decode_frame(&frame).expect("decode request header");
+        // Reply with the wrong opcode to exercise the validation path.
+        let bogus = proto::FrameHeader {
+            version: proto::PROTOCOL_MAJOR,
+            flags: 0,
+            kind: proto::FrameKind::Response,
+            opcode: proto::vk_op::CMD_COPY_BUFFER,
+            req_id: h.req_id,
+            seq: h.seq,
+            body_len: 0,
+        };
+        server
+            .send(&proto::encode_frame(&bogus, &[]))
+            .expect("responder send");
+    });
+
+    let err = vk::cmd_draw(&mut client, command_buffer, 3, 1, 13, 6)
+        .expect_err("wrong opcode must error");
+    match err {
+        graftx_client::ClientError::UnexpectedReply { opcode, kind } => {
+            assert_eq!(opcode, proto::vk_op::CMD_COPY_BUFFER);
+            assert_eq!(kind, proto::FrameKind::Response);
+        }
+        other => panic!("expected UnexpectedReply, got {other:?}"),
+    }
+    responder.join().expect("responder thread");
+}
+
+#[test]
 fn create_command_pool_rejects_wrong_kind() {
     let (mut client, mut server) = loopback();
     // A handle whose kind is *not* KIND_COMMAND_POOL must be rejected.

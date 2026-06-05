@@ -139,6 +139,9 @@ struct CommandBufferState {
     /// lifetime/ownership checks; read only by tests for now.
     #[allow(dead_code)]
     pool: proto::Handle,
+    /// Number of commands recorded into this buffer. Bumped by each
+    /// `CMD_*` opcode that targets the buffer.
+    recorded: u32,
 }
 
 /// Pure-Rust Vulkan backend stub.
@@ -341,9 +344,13 @@ impl Backend for VulkanBackend {
                 if self.command_pools.get(req.pool).is_none() {
                     return Err(proto::ProtocolError::UnknownOpcode(opcode));
                 }
-                let command_buffer = self
-                    .command_buffers
-                    .insert(KIND_COMMAND_BUFFER, CommandBufferState { pool: req.pool });
+                let command_buffer = self.command_buffers.insert(
+                    KIND_COMMAND_BUFFER,
+                    CommandBufferState {
+                        pool: req.pool,
+                        recorded: 0,
+                    },
+                );
                 let mut out = Vec::new();
                 proto::vk::AllocateCommandBufferResponse { command_buffer }.encode(&mut out);
                 Ok(out)
@@ -357,6 +364,31 @@ impl Backend for VulkanBackend {
                 {
                     return Err(proto::ProtocolError::UnknownOpcode(opcode));
                 }
+                Ok(Vec::new())
+            }
+            proto::vk_op::CMD_COPY_BUFFER => {
+                let req = proto::vk::CmdCopyBufferRequest::decode(body)?;
+                // Both buffers must exist on this backend before the copy can be
+                // recorded into the command buffer.
+                if self.buffers.get(req.src).is_none() || self.buffers.get(req.dst).is_none() {
+                    return Err(proto::ProtocolError::UnknownOpcode(opcode));
+                }
+                // The command buffer must exist; bump its recorded count.
+                let state = self
+                    .command_buffers
+                    .get_mut(req.command_buffer)
+                    .ok_or(proto::ProtocolError::UnknownOpcode(opcode))?;
+                state.recorded = state.recorded.saturating_add(1);
+                Ok(Vec::new())
+            }
+            proto::vk_op::CMD_DRAW => {
+                let req = proto::vk::CmdDrawRequest::decode(body)?;
+                // The command buffer must exist; bump its recorded count.
+                let state = self
+                    .command_buffers
+                    .get_mut(req.command_buffer)
+                    .ok_or(proto::ProtocolError::UnknownOpcode(opcode))?;
+                state.recorded = state.recorded.saturating_add(1);
                 Ok(Vec::new())
             }
             // Everything else in the Vulkan namespace is not implemented yet.
@@ -470,6 +502,40 @@ mod tests {
         body
     }
 
+    /// Encode a `CMD_COPY_BUFFER` request body.
+    fn cmd_copy_buffer_body(
+        command_buffer: proto::Handle,
+        src: proto::Handle,
+        dst: proto::Handle,
+        size: u64,
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::CmdCopyBufferRequest {
+            command_buffer,
+            src,
+            dst,
+            size,
+        }
+        .encode(&mut body);
+        body
+    }
+
+    /// Encode a `CMD_DRAW` request body.
+    fn cmd_draw_body(
+        command_buffer: proto::Handle,
+        vertex_count: u32,
+        instance_count: u32,
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        proto::vk::CmdDrawRequest {
+            command_buffer,
+            vertex_count,
+            instance_count,
+        }
+        .encode(&mut body);
+        body
+    }
+
     /// Drive a backend up through `GET_DEVICE_QUEUE`, returning the logical
     /// device handle alongside its minted queue handle.
     fn create_queue_one(backend: &mut VulkanBackend) -> (proto::Handle, proto::Handle) {
@@ -502,6 +568,37 @@ mod tests {
             .expect("decode command pool response")
             .pool;
         (device, pool)
+    }
+
+    /// Drive a backend up through `ALLOCATE_COMMAND_BUFFER`, returning the
+    /// logical device handle alongside its minted command-buffer handle.
+    fn allocate_command_buffer_one(backend: &mut VulkanBackend) -> (proto::Handle, proto::Handle) {
+        let (device, pool) = create_command_pool_one(backend);
+        let buf_resp = backend
+            .handle(
+                proto::vk_op::ALLOCATE_COMMAND_BUFFER,
+                8,
+                &allocate_command_buffer_body(pool),
+            )
+            .expect("allocate command buffer should succeed");
+        let command_buffer = proto::vk::AllocateCommandBufferResponse::decode(&buf_resp)
+            .expect("decode command buffer response")
+            .command_buffer;
+        (device, command_buffer)
+    }
+
+    /// Create a buffer on `device`, returning its minted handle.
+    fn create_buffer_one(backend: &mut VulkanBackend, device: proto::Handle) -> proto::Handle {
+        let buf_resp = backend
+            .handle(
+                proto::vk_op::CREATE_BUFFER,
+                6,
+                &create_buffer_body(device, 1024, 0x20),
+            )
+            .expect("create buffer should succeed");
+        proto::vk::CreateBufferResponse::decode(&buf_resp)
+            .expect("decode buffer response")
+            .buffer
     }
 
     /// Drive a backend through `CREATE_INSTANCE` then `ENUMERATE_PHYSICAL_DEVICES`,
@@ -1094,6 +1191,187 @@ mod tests {
                 &queue_submit_body(queue, bogus_buffer),
             )
             .expect_err("queue submit with bogus command buffer must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn cmd_copy_buffer_records_and_bumps_count() {
+        let mut backend = VulkanBackend::new();
+        let (device, command_buffer) = allocate_command_buffer_one(&mut backend);
+        let src = create_buffer_one(&mut backend, device);
+        let dst = create_buffer_one(&mut backend, device);
+
+        let ack = backend
+            .handle(
+                proto::vk_op::CMD_COPY_BUFFER,
+                10,
+                &cmd_copy_buffer_body(command_buffer, src, dst, 512),
+            )
+            .expect("cmd copy buffer should succeed");
+        // The reply is an empty ack body.
+        assert!(ack.is_empty());
+
+        let state = backend
+            .command_buffers
+            .get(command_buffer)
+            .expect("command buffer state present");
+        assert_eq!(state.recorded, 1);
+
+        // A second record bumps the count again.
+        backend
+            .handle(
+                proto::vk_op::CMD_COPY_BUFFER,
+                11,
+                &cmd_copy_buffer_body(command_buffer, src, dst, 256),
+            )
+            .expect("second cmd copy buffer should succeed");
+        let state = backend
+            .command_buffers
+            .get(command_buffer)
+            .expect("command buffer state present");
+        assert_eq!(state.recorded, 2);
+    }
+
+    #[test]
+    fn cmd_copy_buffer_with_bogus_command_buffer_errors() {
+        let mut backend = VulkanBackend::new();
+        let device = create_device_one(&mut backend);
+        let src = create_buffer_one(&mut backend, device);
+        let dst = create_buffer_one(&mut backend, device);
+
+        // A command buffer handle that was never allocated by this backend.
+        let bogus = proto::Handle::new(KIND_COMMAND_BUFFER, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::CMD_COPY_BUFFER,
+                10,
+                &cmd_copy_buffer_body(bogus, src, dst, 512),
+            )
+            .expect_err("cmd copy buffer with bogus command buffer must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+    }
+
+    #[test]
+    fn cmd_copy_buffer_with_bogus_src_errors() {
+        let mut backend = VulkanBackend::new();
+        let (device, command_buffer) = allocate_command_buffer_one(&mut backend);
+        let dst = create_buffer_one(&mut backend, device);
+
+        // A source buffer handle that was never minted by this backend.
+        let bogus_src = proto::Handle::new(KIND_BUFFER, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::CMD_COPY_BUFFER,
+                10,
+                &cmd_copy_buffer_body(command_buffer, bogus_src, dst, 512),
+            )
+            .expect_err("cmd copy buffer with bogus src must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+        // The failed record must not have bumped the count.
+        let state = backend
+            .command_buffers
+            .get(command_buffer)
+            .expect("command buffer state present");
+        assert_eq!(state.recorded, 0);
+    }
+
+    #[test]
+    fn cmd_copy_buffer_with_bogus_dst_errors() {
+        let mut backend = VulkanBackend::new();
+        let (device, command_buffer) = allocate_command_buffer_one(&mut backend);
+        let src = create_buffer_one(&mut backend, device);
+
+        // A destination buffer handle that was never minted by this backend.
+        let bogus_dst = proto::Handle::new(KIND_BUFFER, 0, 999);
+        let err = backend
+            .handle(
+                proto::vk_op::CMD_COPY_BUFFER,
+                10,
+                &cmd_copy_buffer_body(command_buffer, src, bogus_dst, 512),
+            )
+            .expect_err("cmd copy buffer with bogus dst must error");
+        assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
+        // The failed record must not have bumped the count.
+        let state = backend
+            .command_buffers
+            .get(command_buffer)
+            .expect("command buffer state present");
+        assert_eq!(state.recorded, 0);
+    }
+
+    #[test]
+    fn cmd_draw_records_and_bumps_count() {
+        let mut backend = VulkanBackend::new();
+        let (_device, command_buffer) = allocate_command_buffer_one(&mut backend);
+
+        let ack = backend
+            .handle(
+                proto::vk_op::CMD_DRAW,
+                12,
+                &cmd_draw_body(command_buffer, 3, 1),
+            )
+            .expect("cmd draw should succeed");
+        // The reply is an empty ack body.
+        assert!(ack.is_empty());
+
+        let state = backend
+            .command_buffers
+            .get(command_buffer)
+            .expect("command buffer state present");
+        assert_eq!(state.recorded, 1);
+
+        // A second record bumps the count again.
+        backend
+            .handle(
+                proto::vk_op::CMD_DRAW,
+                13,
+                &cmd_draw_body(command_buffer, 6, 2),
+            )
+            .expect("second cmd draw should succeed");
+        let state = backend
+            .command_buffers
+            .get(command_buffer)
+            .expect("command buffer state present");
+        assert_eq!(state.recorded, 2);
+    }
+
+    #[test]
+    fn cmd_draw_then_copy_share_recorded_count() {
+        let mut backend = VulkanBackend::new();
+        let (device, command_buffer) = allocate_command_buffer_one(&mut backend);
+        let src = create_buffer_one(&mut backend, device);
+        let dst = create_buffer_one(&mut backend, device);
+
+        backend
+            .handle(
+                proto::vk_op::CMD_DRAW,
+                12,
+                &cmd_draw_body(command_buffer, 3, 1),
+            )
+            .expect("cmd draw should succeed");
+        backend
+            .handle(
+                proto::vk_op::CMD_COPY_BUFFER,
+                13,
+                &cmd_copy_buffer_body(command_buffer, src, dst, 512),
+            )
+            .expect("cmd copy buffer should succeed");
+
+        let state = backend
+            .command_buffers
+            .get(command_buffer)
+            .expect("command buffer state present");
+        assert_eq!(state.recorded, 2);
+    }
+
+    #[test]
+    fn cmd_draw_with_bogus_command_buffer_errors() {
+        let mut backend = VulkanBackend::new();
+        // A command buffer handle that was never allocated by this backend.
+        let bogus = proto::Handle::new(KIND_COMMAND_BUFFER, 0, 999);
+        let err = backend
+            .handle(proto::vk_op::CMD_DRAW, 12, &cmd_draw_body(bogus, 3, 1))
+            .expect_err("cmd draw with bogus command buffer must error");
         assert!(matches!(err, proto::ProtocolError::UnknownOpcode(_)));
     }
 }

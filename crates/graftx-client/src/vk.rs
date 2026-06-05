@@ -483,3 +483,93 @@ pub fn queue_submit<T: Transport>(
     }
     Ok(())
 }
+
+/// Issue `vkCmdCopyBuffer`, recording a `src` → `dst` copy of `size` bytes into
+/// `command_buffer`.
+///
+/// Sends a [`CMD_COPY_BUFFER`](proto::vk_op::CMD_COPY_BUFFER) request carrying a
+/// [`CmdCopyBufferRequest`](proto::vk::CmdCopyBufferRequest), awaits the
+/// correlated response, and validates its opcode and kind. The reply body is an
+/// empty acknowledgement, so nothing is decoded.
+pub fn cmd_copy_buffer<T: Transport>(
+    t: &mut T,
+    command_buffer: proto::Handle,
+    src: proto::Handle,
+    dst: proto::Handle,
+    size: u64,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::vk::CmdCopyBufferRequest {
+        command_buffer,
+        src,
+        dst,
+        size,
+    }
+    .encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::CMD_COPY_BUFFER,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::CMD_COPY_BUFFER || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
+}
+
+/// Issue `vkCmdDraw`, recording a non-indexed draw of `vertex_count` vertices
+/// across `instance_count` instances into `command_buffer`.
+///
+/// Sends a [`CMD_DRAW`](proto::vk_op::CMD_DRAW) request carrying a
+/// [`CmdDrawRequest`](proto::vk::CmdDrawRequest), awaits the correlated
+/// response, and validates its opcode and kind. The reply body is an empty
+/// acknowledgement, so nothing is decoded.
+pub fn cmd_draw<T: Transport>(
+    t: &mut T,
+    command_buffer: proto::Handle,
+    vertex_count: u32,
+    instance_count: u32,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::vk::CmdDrawRequest {
+        command_buffer,
+        vertex_count,
+        instance_count,
+    }
+    .encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::CMD_DRAW,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::CMD_DRAW || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
+}
