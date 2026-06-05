@@ -16,6 +16,7 @@ use graftx_transport::Transport;
 
 pub mod amf;
 pub mod cl;
+pub mod client;
 pub mod cuda;
 pub mod gl;
 pub mod hip;
@@ -25,6 +26,8 @@ pub mod sycl;
 pub mod video;
 pub mod vk;
 pub mod wgpu;
+
+pub use client::Client;
 
 /// Errors surfaced by the client session layer.
 #[derive(Debug, thiserror::Error)]

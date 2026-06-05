@@ -28,7 +28,7 @@ pub use gl_backend::GlBackend;
 pub use hip_backend::HipBackend;
 pub use l0_backend::L0Backend;
 pub use optix_backend::OptixBackend;
-pub use serve::{serve, serve_tcp};
+pub use serve::{serve, serve_tcp, serve_with_metrics};
 pub use session::Session;
 pub use sycl_backend::SyclBackend;
 pub use video_backend::VideoBackend;

@@ -12,6 +12,7 @@ repository.workspace = true
 graftx-protocol.workspace = true
 graftx-handles.workspace = true
 graftx-transport.workspace = true
+graftx-obs.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
