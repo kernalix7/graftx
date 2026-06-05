@@ -14,6 +14,8 @@ use graftx_transport::{loopback, Transport};
 
 /// Server object kinds the responder stamps into the handles it returns. These
 /// mirror the kinds the real server backend assigns.
+const KIND_DEVICE_MEMORY: u8 = 5;
+const KIND_BUFFER: u8 = 6;
 const KIND_COMMAND_POOL: u8 = 7;
 const KIND_COMMAND_BUFFER: u8 = 8;
 
@@ -226,6 +228,85 @@ fn create_command_pool_rejects_wrong_kind() {
             assert_eq!(k, u16::from(KIND_COMMAND_BUFFER));
         }
         other => panic!("expected BadKind, got {other:?}"),
+    }
+    responder.join().expect("responder thread");
+}
+
+#[test]
+fn destroy_buffer_acknowledges() {
+    let (mut client, mut server) = loopback();
+    let buffer = proto::Handle::new(KIND_BUFFER, 1, 10);
+
+    let responder = thread::spawn(move || {
+        let frame = server.recv().expect("responder recv");
+        let body = expect_request(&frame, proto::vk_op::DESTROY_BUFFER);
+        let req = proto::vk::DestroyBufferRequest::decode(&body).expect("decode req body");
+        assert_eq!(req.buffer, buffer);
+        let (h, _) = proto::decode_frame(&frame).expect("decode request header");
+
+        // DestroyBuffer's reply is an empty ack body.
+        server
+            .send(&response_frame(&h, &[]))
+            .expect("responder send");
+    });
+
+    vk::destroy_buffer(&mut client, buffer, 14, 7).expect("destroy_buffer");
+    responder.join().expect("responder thread");
+}
+
+#[test]
+fn free_memory_acknowledges() {
+    let (mut client, mut server) = loopback();
+    let memory = proto::Handle::new(KIND_DEVICE_MEMORY, 1, 20);
+
+    let responder = thread::spawn(move || {
+        let frame = server.recv().expect("responder recv");
+        let body = expect_request(&frame, proto::vk_op::FREE_MEMORY);
+        let req = proto::vk::FreeMemoryRequest::decode(&body).expect("decode req body");
+        assert_eq!(req.memory, memory);
+        let (h, _) = proto::decode_frame(&frame).expect("decode request header");
+
+        // FreeMemory's reply is an empty ack body.
+        server
+            .send(&response_frame(&h, &[]))
+            .expect("responder send");
+    });
+
+    vk::free_memory(&mut client, memory, 15, 8).expect("free_memory");
+    responder.join().expect("responder thread");
+}
+
+#[test]
+fn destroy_command_pool_rejects_wrong_opcode() {
+    let (mut client, mut server) = loopback();
+    let pool = proto::Handle::new(KIND_COMMAND_POOL, 1, 42);
+
+    let responder = thread::spawn(move || {
+        let frame = server.recv().expect("responder recv");
+        let (h, _) = proto::decode_frame(&frame).expect("decode request header");
+        // Reply with the wrong opcode to exercise the validation path.
+        let bogus = proto::FrameHeader {
+            version: proto::PROTOCOL_MAJOR,
+            flags: 0,
+            kind: proto::FrameKind::Response,
+            opcode: proto::vk_op::FREE_MEMORY,
+            req_id: h.req_id,
+            seq: h.seq,
+            body_len: 0,
+        };
+        server
+            .send(&proto::encode_frame(&bogus, &[]))
+            .expect("responder send");
+    });
+
+    let err =
+        vk::destroy_command_pool(&mut client, pool, 16, 9).expect_err("wrong opcode must error");
+    match err {
+        graftx_client::ClientError::UnexpectedReply { opcode, kind } => {
+            assert_eq!(opcode, proto::vk_op::FREE_MEMORY);
+            assert_eq!(kind, proto::FrameKind::Response);
+        }
+        other => panic!("expected UnexpectedReply, got {other:?}"),
     }
     responder.join().expect("responder thread");
 }

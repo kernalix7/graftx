@@ -131,3 +131,75 @@ pub fn gen_buffer<T: Transport>(
     }
     Ok(resp.buffer)
 }
+
+/// Issue a swap-buffers call for `context` and await its ack.
+///
+/// Sends a [`SWAP_BUFFERS`](proto::gl_op::SWAP_BUFFERS) request carrying a
+/// [`SwapBuffersRequest`](proto::gl::SwapBuffersRequest) naming `context`,
+/// awaits the correlated response, and validates its opcode and kind. The
+/// response body is an empty ack.
+pub fn swap_buffers<T: Transport>(
+    t: &mut T,
+    context: proto::Handle,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::gl::SwapBuffersRequest { context }.encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::gl_op::SWAP_BUFFERS,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::gl_op::SWAP_BUFFERS || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
+}
+
+/// Issue a delete-buffer call for `buffer` and await its ack.
+///
+/// Sends a [`DELETE_BUFFER`](proto::gl_op::DELETE_BUFFER) request carrying a
+/// [`DeleteBufferRequest`](proto::gl::DeleteBufferRequest) naming `buffer`,
+/// awaits the correlated response, and validates its opcode and kind. The
+/// response body is an empty ack.
+pub fn delete_buffer<T: Transport>(
+    t: &mut T,
+    buffer: proto::Handle,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::gl::DeleteBufferRequest { buffer }.encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::gl_op::DELETE_BUFFER,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::gl_op::DELETE_BUFFER || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
+}

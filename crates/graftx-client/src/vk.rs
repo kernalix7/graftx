@@ -573,3 +573,111 @@ pub fn cmd_draw<T: Transport>(
     }
     Ok(())
 }
+
+/// Issue `vkDestroyBuffer`, destroying `buffer`.
+///
+/// Sends a [`DESTROY_BUFFER`](proto::vk_op::DESTROY_BUFFER) request carrying a
+/// [`DestroyBufferRequest`](proto::vk::DestroyBufferRequest), awaits the
+/// correlated response, and validates its opcode and kind. The reply body is an
+/// empty acknowledgement, so nothing is decoded.
+pub fn destroy_buffer<T: Transport>(
+    t: &mut T,
+    buffer: proto::Handle,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::vk::DestroyBufferRequest { buffer }.encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::DESTROY_BUFFER,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::DESTROY_BUFFER || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
+}
+
+/// Issue `vkFreeMemory`, freeing `memory`.
+///
+/// Sends a [`FREE_MEMORY`](proto::vk_op::FREE_MEMORY) request carrying a
+/// [`FreeMemoryRequest`](proto::vk::FreeMemoryRequest), awaits the correlated
+/// response, and validates its opcode and kind. The reply body is an empty
+/// acknowledgement, so nothing is decoded.
+pub fn free_memory<T: Transport>(
+    t: &mut T,
+    memory: proto::Handle,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::vk::FreeMemoryRequest { memory }.encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::FREE_MEMORY,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::FREE_MEMORY || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
+}
+
+/// Issue `vkDestroyCommandPool`, destroying `pool`.
+///
+/// Sends a [`DESTROY_COMMAND_POOL`](proto::vk_op::DESTROY_COMMAND_POOL) request
+/// carrying a [`DestroyCommandPoolRequest`](proto::vk::DestroyCommandPoolRequest),
+/// awaits the correlated response, and validates its opcode and kind. The reply
+/// body is an empty acknowledgement, so nothing is decoded.
+pub fn destroy_command_pool<T: Transport>(
+    t: &mut T,
+    pool: proto::Handle,
+    req_id: u32,
+    seq: u64,
+) -> Result<(), ClientError> {
+    let mut body = Vec::new();
+    proto::vk::DestroyCommandPoolRequest { pool }.encode(&mut body);
+    let header = proto::FrameHeader {
+        version: proto::PROTOCOL_MAJOR,
+        flags: 0,
+        kind: proto::FrameKind::Request,
+        opcode: proto::vk_op::DESTROY_COMMAND_POOL,
+        req_id,
+        seq,
+        body_len: body.len() as u32,
+    };
+    t.send(&proto::encode_frame(&header, &body))?;
+
+    let reply = t.recv()?;
+    let (h, _b) = proto::decode_frame(&reply)?;
+    if h.opcode != proto::vk_op::DESTROY_COMMAND_POOL || h.kind != proto::FrameKind::Response {
+        return Err(ClientError::UnexpectedReply {
+            opcode: h.opcode,
+            kind: h.kind,
+        });
+    }
+    Ok(())
+}
