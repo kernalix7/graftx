@@ -5,18 +5,23 @@
 //! than in ad-hoc shell scripts — generating the opcode table from the protocol
 //! definitions and checking that cross-references in the docs stay valid.
 //!
-//! `gen-opcodes` renders the opcode table to stdout. The remaining subcommands
-//! are scaffolding for now: each one announces what it will do and exits cleanly
-//! so the wiring (workspace member, cargo alias, dispatch) can be exercised
-//! before the real codegen lands.
+//! `gen-opcodes` renders the opcode table to stdout. `check-xrefs` lints the
+//! Markdown under `docs/` for broken relative links and out-of-range chapter
+//! references, exiting non-zero when it finds problems so CI can gate on it.
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 mod opcodes;
+mod xrefs;
 
+use std::path::Path;
 use std::process::ExitCode;
 
 /// Exit code returned for an unknown or malformed subcommand.
 const EXIT_USAGE: u8 = 2;
+
+/// Directory scanned by `check-xrefs`, relative to the repo root (the working
+/// directory `cargo xtask` is invoked from).
+const DOCS_DIR: &str = "docs";
 
 fn main() -> ExitCode {
     // Skip argv[0] (the binary path); the dispatcher only cares about the
@@ -42,11 +47,14 @@ fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         "check-xrefs" => {
-            not_yet_implemented(
-                "check-xrefs",
-                "validate cross-references between the docs and the protocol",
-            );
-            ExitCode::SUCCESS
+            let issues = xrefs::check_xrefs(Path::new(DOCS_DIR), &mut std::io::stdout());
+            // Exit non-zero on any issue so the check can gate CI; a clean run
+            // exits zero.
+            if issues == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         "help" | "-h" | "--help" => {
             print_usage(&mut std::io::stdout());
@@ -58,11 +66,6 @@ fn run(args: &[String]) -> ExitCode {
             ExitCode::from(EXIT_USAGE)
         }
     }
-}
-
-/// Announce a subcommand that exists but has no implementation yet.
-fn not_yet_implemented(command: &str, plan: &str) {
-    println!("graftx-xtask: `{command}` not yet implemented (planned: {plan})");
 }
 
 /// Write the usage banner to `out`.
@@ -110,9 +113,16 @@ mod tests {
     }
 
     #[test]
-    fn known_subcommands_succeed() {
+    fn gen_opcodes_succeeds() {
         assert_eq!(run(&argv(&["gen-opcodes"])), ExitCode::SUCCESS);
-        assert_eq!(run(&argv(&["check-xrefs"])), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn check_xrefs_is_a_known_subcommand() {
+        // `check-xrefs` returns SUCCESS (no issues) or FAILURE (issues found)
+        // depending on the docs as seen from the test's working directory, but
+        // never the usage error reserved for unknown subcommands.
+        assert_ne!(run(&argv(&["check-xrefs"])), ExitCode::from(EXIT_USAGE));
     }
 
     #[test]
