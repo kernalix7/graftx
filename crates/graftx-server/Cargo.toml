@@ -12,3 +12,6 @@ repository.workspace = true
 graftx-protocol.workspace = true
 graftx-transport.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+graftx-client = { path = "../graftx-client" }

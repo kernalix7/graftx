@@ -22,6 +22,7 @@ dependencies = [
 name = "graftx-server"
 version = "0.0.0"
 dependencies = [
+ "graftx-client",
  "graftx-protocol",
  "graftx-transport",
  "thiserror",
