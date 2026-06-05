@@ -28,7 +28,14 @@ belongs in `../`, not here.
 
 ## Index
 
-- [`ROADMAP.md`](ROADMAP.md) — milestone plan (M0–M5 plus performance work).
+- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — the master implementation
+  plan: a 32-chapter, ~200+ page engineering design covering architecture,
+  protocol, transport, every API backend, security, performance, testing, and
+  delivery. The full chapters live under [`plan/`](plan/).
+- [`ROADMAP.md`](ROADMAP.md) — condensed milestone plan (M0–M5 plus performance
+  work). Chapter 30 of the implementation plan is the detailed expansion.
 
-Protocol and transport design specs will be added here as those subsystems are
-designed.
+Protocol and transport design specs are covered in detail by the implementation
+plan ([`plan/06-protocol.md`](plan/06-protocol.md),
+[`plan/08-transport.md`](plan/08-transport.md)); standalone specs may be split
+out here as those subsystems stabilize.
