@@ -168,6 +168,10 @@ pub mod gl_op {
     pub const MAKE_CURRENT: u32 = opcode(ApiId::OpenGl, 0x0002);
     /// Generate a buffer object within a context.
     pub const GEN_BUFFER: u32 = opcode(ApiId::OpenGl, 0x0003);
+    /// Present the back buffer of a context to the screen.
+    pub const SWAP_BUFFERS: u32 = opcode(ApiId::OpenGl, 0x0004);
+    /// Delete a buffer object.
+    pub const DELETE_BUFFER: u32 = opcode(ApiId::OpenGl, 0x0005);
 }
 
 /// CUDA opcodes (under [`ApiId::Cuda`]).
@@ -978,6 +982,54 @@ pub mod gl {
     }
 
     impl GenBufferResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.buffer.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                buffer: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`gl_op::SWAP_BUFFERS`](super::gl_op::SWAP_BUFFERS).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SwapBuffersRequest {
+        /// Handle naming the context whose back buffer is presented.
+        pub context: Handle,
+    }
+
+    impl SwapBuffersRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`gl_op::DELETE_BUFFER`](super::gl_op::DELETE_BUFFER).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DeleteBufferRequest {
+        /// Handle naming the buffer being deleted.
+        pub buffer: Handle,
+    }
+
+    impl DeleteBufferRequest {
         /// Append the encoded body to `out`.
         pub fn encode(&self, out: &mut Vec<u8>) {
             out.extend_from_slice(&self.buffer.raw().to_le_bytes());
@@ -2394,8 +2446,12 @@ mod tests {
         assert_eq!(opcode_api(gl_op::CREATE_CONTEXT), ApiId::OpenGl as u8);
         assert_eq!(opcode_api(gl_op::MAKE_CURRENT), ApiId::OpenGl as u8);
         assert_eq!(opcode_api(gl_op::GEN_BUFFER), ApiId::OpenGl as u8);
+        assert_eq!(opcode_api(gl_op::SWAP_BUFFERS), ApiId::OpenGl as u8);
+        assert_eq!(opcode_api(gl_op::DELETE_BUFFER), ApiId::OpenGl as u8);
         assert_ne!(gl_op::CREATE_CONTEXT, gl_op::MAKE_CURRENT);
         assert_ne!(gl_op::MAKE_CURRENT, gl_op::GEN_BUFFER);
+        assert_ne!(gl_op::GEN_BUFFER, gl_op::SWAP_BUFFERS);
+        assert_ne!(gl_op::SWAP_BUFFERS, gl_op::DELETE_BUFFER);
     }
 
     #[test]
@@ -2681,6 +2737,28 @@ mod tests {
     }
 
     #[test]
+    fn gl_swap_buffers_request_roundtrip() {
+        let req = gl::SwapBuffersRequest {
+            context: Handle::new(12, 6, 9),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(gl::SwapBuffersRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn gl_delete_buffer_request_roundtrip() {
+        let req = gl::DeleteBufferRequest {
+            buffer: Handle::new(13, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(gl::DeleteBufferRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
     fn gl_bodies_reject_short_buffers() {
         assert_eq!(
             gl::CreateContextResponse::decode(&[0u8; 7]),
@@ -2696,6 +2774,14 @@ mod tests {
         );
         assert_eq!(
             gl::GenBufferResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            gl::SwapBuffersRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            gl::DeleteBufferRequest::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
