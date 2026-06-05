@@ -15,8 +15,12 @@
 //! out-of-range chapter references, exiting non-zero when it finds problems so
 //! CI can gate on it. `verify` runs `check-xrefs` and `opcodes-lock --check`
 //! together and exits zero only when both pass, so CI can gate on one command.
+//! `doc-index` checks that every design doc under `docs/design/` is linked from
+//! that directory's `README.md` index, exiting non-zero when one is missing so a
+//! newly added doc cannot silently fall out of the table of contents.
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod doc_index;
 mod opcodes;
 mod xrefs;
 
@@ -36,6 +40,10 @@ const OPCODES_LOCK: &str = "docs/design/opcodes.lock";
 /// Human-readable opcode-table doc written and verified by `opcodes-md`,
 /// relative to the repo root.
 const OPCODES_MD: &str = "docs/design/OPCODES.md";
+
+/// Directory scanned by `doc-index`, relative to the repo root. Its `README.md`
+/// indexes the sibling design docs.
+const DESIGN_DIR: &str = "docs/design";
 
 fn main() -> ExitCode {
     // Skip argv[0] (the binary path); the dispatcher only cares about the
@@ -88,6 +96,16 @@ fn run(args: &[String]) -> ExitCode {
             // Exit non-zero on any issue so the check can gate CI; a clean run
             // exits zero.
             if issues == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        "doc-index" => {
+            let missing = doc_index::check_doc_index(Path::new(DESIGN_DIR), &mut std::io::stdout());
+            // Exit non-zero when any design doc is unlinked so the check can gate
+            // CI; a fully indexed directory exits zero.
+            if missing == 0 {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -374,6 +392,7 @@ Subcommands:
     opcodes-lock   Freeze (--write) or verify (--check, default) the opcode lock
     opcodes-md     Write (--write) or verify (--check, default) docs/design/OPCODES.md
     check-xrefs    Validate cross-references between the docs and the protocol
+    doc-index      Check every docs/design/*.md is linked from its README index
     verify         Run check-xrefs and opcodes-lock --check together (CI gate)
     help           Show this message"
     );
@@ -432,6 +451,14 @@ mod tests {
         // depending on the docs as seen from the test's working directory, but
         // never the usage error reserved for unknown subcommands.
         assert_ne!(run(&argv(&["check-xrefs"])), ExitCode::from(EXIT_USAGE));
+    }
+
+    #[test]
+    fn doc_index_is_a_known_subcommand() {
+        // `doc-index` returns SUCCESS (all docs indexed) or FAILURE (a doc is
+        // missing from the README) depending on the docs as seen from the test's
+        // working directory, but never the usage error for unknown subcommands.
+        assert_ne!(run(&argv(&["doc-index"])), ExitCode::from(EXIT_USAGE));
     }
 
     #[test]
