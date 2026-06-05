@@ -34,6 +34,10 @@ belongs in `../`, not here.
   delivery. The full chapters live under [`plan/`](plan/).
 - [`ROADMAP.md`](ROADMAP.md) — condensed milestone plan (M0–M5 plus performance
   work). Chapter 30 of the implementation plan is the detailed expansion.
+- [`PROTOCOL.md`](PROTOCOL.md) — wire-protocol reference: transport vs. protocol
+  frame layering, the 28-byte `FrameHeader`, `FrameKind`, the opcode scheme and
+  `ApiId` table, the `Hello`/`Welcome` handshake, and the 64-bit `Handle`
+  layout, as implemented in `crates/graftx-protocol`.
 
 Protocol and transport design specs are covered in detail by the implementation
 plan ([`plan/06-protocol.md`](plan/06-protocol.md),
