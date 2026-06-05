@@ -73,6 +73,19 @@ impl Transport for Loopback {
     }
 }
 
+/// Delegate [`Transport`] through a boxed trait object so backends can be held
+/// behind dynamic dispatch (e.g. `Box<dyn Transport + Send>` selected at
+/// runtime). Each call forwards to the inner transport unchanged.
+impl Transport for Box<dyn Transport + Send> {
+    fn send(&mut self, frame: &[u8]) -> io::Result<()> {
+        (**self).send(frame)
+    }
+
+    fn recv(&mut self) -> io::Result<Vec<u8>> {
+        (**self).recv()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +104,17 @@ mod tests {
         let (mut a, b) = loopback();
         drop(b);
         assert!(a.recv().is_err());
+    }
+
+    #[test]
+    fn boxed_transport_round_trips_over_loopback() {
+        let (a, b) = loopback();
+        let mut boxed: Box<dyn Transport + Send> = Box::new(a);
+        let mut peer: Box<dyn Transport + Send> = Box::new(b);
+        boxed.send(b"ping").expect("send through box");
+        assert_eq!(peer.recv().expect("recv through box"), b"ping");
+        peer.send(b"pong").expect("send back through box");
+        assert_eq!(boxed.recv().expect("recv reply through box"), b"pong");
     }
 
     #[test]
