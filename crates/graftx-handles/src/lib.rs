@@ -106,6 +106,25 @@ impl<T> HandleTable<T> {
         }
     }
 
+    /// Quota-enforcing insert: insert `value` tagged with `kind` and return its
+    /// fresh [`Handle`] only while the table is below `max_live`.
+    ///
+    /// If the current live count ([`len`](Self::len)) is `< max_live`, this
+    /// behaves exactly like [`insert`](Self::insert) and returns `Some(handle)`.
+    /// Otherwise the table is at or over its quota and the value is *not*
+    /// inserted: it is dropped and `None` is returned, leaving the table
+    /// unchanged. Callers map the `None` case to a resource-exhausted error.
+    ///
+    /// A `max_live` of `0` always returns `None`, since the live count can never
+    /// be below zero.
+    pub fn try_insert(&mut self, kind: u8, value: T, max_live: usize) -> Option<Handle> {
+        if self.live < max_live {
+            Some(self.insert(kind, value))
+        } else {
+            None
+        }
+    }
+
     /// Resolve `h` to a shared reference, validating slot range, occupancy, and
     /// generation. Returns `None` for an out-of-range, empty, or stale handle.
     #[must_use]
@@ -761,6 +780,61 @@ mod tests {
             // Pre-clear handles still resolve to nothing even after reuse.
             assert_eq!(table.get(old), None);
         }
+    }
+
+    #[test]
+    fn try_insert_succeeds_until_quota_then_returns_none() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+
+        // Inserts succeed while below the quota and the live count climbs.
+        let a = table.try_insert(KIND, 1, 2);
+        assert!(a.is_some());
+        assert_eq!(table.len(), 1);
+        let b = table.try_insert(KIND, 2, 2);
+        assert!(b.is_some());
+        assert_eq!(table.len(), 2);
+
+        // At the quota, further inserts are rejected without mutating the table.
+        assert_eq!(table.try_insert(KIND, 3, 2), None);
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.try_insert(KIND, 4, 2), None);
+        assert_eq!(table.len(), 2);
+
+        // The handles handed out before the quota still resolve.
+        assert_eq!(table.get(a.unwrap()), Some(&1));
+        assert_eq!(table.get(b.unwrap()), Some(&2));
+    }
+
+    #[test]
+    fn try_insert_succeeds_again_after_remove_frees_quota() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table
+            .try_insert(KIND, 1, 1)
+            .expect("first insert is below quota");
+        // The table is now full at max_live = 1.
+        assert_eq!(table.try_insert(KIND, 2, 1), None);
+
+        // Freeing the live entry drops the count back below the quota.
+        assert_eq!(table.remove(a), Some(1));
+        assert_eq!(table.len(), 0);
+
+        // A fresh try_insert now succeeds and resolves.
+        let b = table
+            .try_insert(KIND, 2, 1)
+            .expect("insert succeeds after a remove");
+        assert_eq!(table.len(), 1);
+        assert_eq!(table.get(b), Some(&2));
+    }
+
+    #[test]
+    fn try_insert_with_zero_quota_always_returns_none() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        assert_eq!(table.try_insert(KIND, 1, 0), None);
+        assert_eq!(table.try_insert(KIND, 2, 0), None);
+        // No slot was ever allocated and nothing is live.
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.capacity(), 0);
+        assert!(table.is_empty());
     }
 
     #[test]
