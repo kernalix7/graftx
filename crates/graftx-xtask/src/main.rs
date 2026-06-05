@@ -5,10 +5,13 @@
 //! than in ad-hoc shell scripts — generating the opcode table from the protocol
 //! definitions and checking that cross-references in the docs stay valid.
 //!
-//! The subcommands are scaffolding for now: each one announces what it will do
-//! and exits cleanly so the wiring (workspace member, cargo alias, dispatch) can
-//! be exercised before the real codegen lands.
+//! `gen-opcodes` renders the opcode table to stdout. The remaining subcommands
+//! are scaffolding for now: each one announces what it will do and exits cleanly
+//! so the wiring (workspace member, cargo alias, dispatch) can be exercised
+//! before the real codegen lands.
 #![forbid(unsafe_op_in_unsafe_fn)]
+
+mod opcodes;
 
 use std::process::ExitCode;
 
@@ -35,10 +38,7 @@ fn run(args: &[String]) -> ExitCode {
 
     match command {
         "gen-opcodes" => {
-            not_yet_implemented(
-                "gen-opcodes",
-                "generate the opcode-table source from the graftx-protocol definitions",
-            );
+            print!("{}", opcodes::render_opcode_table(opcodes::OPCODES));
             ExitCode::SUCCESS
         }
         "check-xrefs" => {
