@@ -48,6 +48,10 @@ struct Slot<T> {
     /// The generation currently associated with this slot. A handle resolves
     /// only if it carries this exact value.
     generation: u32,
+    /// The `kind` byte the live value was inserted under. Recorded so a live
+    /// slot's [`Handle`] can be reconstructed for read-only introspection
+    /// (see [`HandleTable::iter`]). Meaningful only while `value` is `Some`.
+    kind: u8,
     /// The stored value, or `None` if the slot is free or retired.
     value: Option<T>,
     /// Once `true`, the slot's generation has been exhausted and it is never
@@ -88,11 +92,13 @@ impl<T> HandleTable<T> {
             // Reuse a free slot. Its generation was already bumped on removal.
             let slot = &mut self.slots[slot_idx as usize];
             slot.value = Some(value);
+            slot.kind = kind;
             Handle::new(kind, slot.generation, slot_idx)
         } else {
             let slot_idx = self.slots.len() as u32;
             self.slots.push(Slot {
                 generation: 0,
+                kind,
                 value: Some(value),
                 retired: false,
             });
@@ -157,6 +163,35 @@ impl<T> HandleTable<T> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.live == 0
+    }
+
+    /// Iterate over every live entry as `(handle, &value)` pairs.
+    ///
+    /// Empty and retired slots are skipped. Each yielded [`Handle`] is
+    /// reconstructed from the live slot's recorded `kind`, current generation,
+    /// and slot index, so it resolves via [`get`](Self::get) for as long as the
+    /// slot is not freed. Iteration order follows the underlying slot indices
+    /// and is otherwise unspecified.
+    pub fn iter(&self) -> impl Iterator<Item = (Handle, &T)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot_idx, slot)| {
+                let value = slot.value.as_ref()?;
+                let handle = Handle::new(slot.kind, slot.generation, slot_idx as u32);
+                Some((handle, value))
+            })
+    }
+
+    /// Count the live entries whose handle carries the given `kind` byte.
+    ///
+    /// Empty and retired slots are not counted.
+    #[must_use]
+    pub fn count_by_kind(&self, kind: u8) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.value.is_some() && slot.kind == kind)
+            .count()
     }
 }
 
@@ -315,5 +350,88 @@ mod tests {
 
         // The retired handle never resolves.
         assert_eq!(table.get(last), None);
+    }
+
+    const KIND_A: u8 = 0x11;
+    const KIND_B: u8 = 0x22;
+
+    #[test]
+    fn iter_yields_only_live_slots_with_roundtripping_handles() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        let b = table.insert(KIND_B, 2);
+        let c = table.insert(KIND_A, 3);
+
+        // Collect (handle, value) pairs and confirm every yielded handle
+        // resolves back to the same value via get().
+        let mut seen: Vec<(u64, u32)> = table
+            .iter()
+            .map(|(h, &v)| {
+                assert_eq!(table.get(h), Some(&v));
+                (h.raw(), v)
+            })
+            .collect();
+        seen.sort_unstable();
+
+        let mut expected = vec![(a.raw(), 1), (b.raw(), 2), (c.raw(), 3)];
+        expected.sort_unstable();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn iter_and_count_by_kind_reflect_removal() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        let b = table.insert(KIND_B, 2);
+        let _c = table.insert(KIND_A, 3);
+
+        assert_eq!(table.iter().count(), 3);
+        assert_eq!(table.count_by_kind(KIND_A), 2);
+        assert_eq!(table.count_by_kind(KIND_B), 1);
+
+        // Remove one KIND_A entry; iter() and the counts drop accordingly.
+        assert_eq!(table.remove(a), Some(1));
+        assert_eq!(table.iter().count(), 2);
+        assert_eq!(table.count_by_kind(KIND_A), 1);
+        assert_eq!(table.count_by_kind(KIND_B), 1);
+
+        // The removed handle no longer appears among the live entries.
+        assert!(table.iter().all(|(h, _)| h != a));
+
+        // Remove the remaining KIND_B entry.
+        assert_eq!(table.remove(b), Some(2));
+        assert_eq!(table.iter().count(), 1);
+        assert_eq!(table.count_by_kind(KIND_A), 1);
+        assert_eq!(table.count_by_kind(KIND_B), 0);
+    }
+
+    #[test]
+    fn count_by_kind_ignores_absent_kind_and_empty_table() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        assert_eq!(table.count_by_kind(KIND_A), 0);
+        assert_eq!(table.iter().count(), 0);
+
+        let _h = table.insert(KIND_A, 7);
+        // A kind that was never inserted has no live entries.
+        assert_eq!(table.count_by_kind(KIND_B), 0);
+        assert_eq!(table.count_by_kind(KIND_A), 1);
+    }
+
+    #[test]
+    fn reused_slot_reports_new_kind_in_iter_and_counts() {
+        // A freed slot reused under a different kind must report the new kind,
+        // not the stale one recorded by the prior occupant.
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        assert_eq!(table.remove(a), Some(1));
+
+        let b = table.insert(KIND_B, 2);
+        assert_eq!(b.slot(), a.slot());
+
+        assert_eq!(table.count_by_kind(KIND_A), 0);
+        assert_eq!(table.count_by_kind(KIND_B), 1);
+
+        let live: Vec<(u8, u32)> = table.iter().map(|(h, &v)| (h.kind(), v)).collect();
+        assert_eq!(live, vec![(KIND_B, 2)]);
     }
 }
