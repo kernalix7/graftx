@@ -54,6 +54,13 @@ belongs in `../`, not here.
   generational and parent-handle validation in `graftx-server`/`graftx-handles`),
   plus the planned defenses (copy-to-private/TOCTOU, sandboxing, per-session
   auth, quotas) cross-referenced to [`plan/23-security.md`](plan/23-security.md).
+- [`HANDLES.md`](HANDLES.md) — generational handle reference: the 64-bit
+  `Handle` layout (kind|generation|slot), the `HandleTable<T>` slot/free-list
+  design, the use-after-free and forged-handle defenses (generation bump on
+  free, retirement near `GENERATION_MAX`), per-kind namespacing across backends,
+  and the introspection/quota API (`len`/`iter`/`iter_kind`/`count_by_kind`/
+  `capacity`/`retired`/`is_live`/`kinds`/`stats`/`try_insert`/`clear`/`retain`),
+  as implemented in `crates/graftx-protocol` and `crates/graftx-handles`.
 
 Protocol and transport design specs are covered in detail by the implementation
 plan ([`plan/06-protocol.md`](plan/06-protocol.md),
