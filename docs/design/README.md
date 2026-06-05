@@ -38,6 +38,12 @@ belongs in `../`, not here.
   frame layering, the 28-byte `FrameHeader`, `FrameKind`, the opcode scheme and
   `ApiId` table, the `Hello`/`Welcome` handshake, and the 64-bit `Handle`
   layout, as implemented in `crates/graftx-protocol`.
+- [`TRANSPORT.md`](TRANSPORT.md) — transport-layer reference: the `Transport`
+  trait (one framed message per `send`/`recv`), the implemented backends
+  (in-process `Loopback`, length-prefixed `StreamTransport` with its `MAX_FRAME`
+  cap, `CountingTransport`, `NullTransport`), the `roundtrip` helper, and how
+  the planned vsock control plane + ivshmem bulk plane map onto the trait, as
+  implemented in `crates/graftx-transport`.
 - [`BACKENDS.md`](BACKENDS.md) — per-API status matrix tracking each GPU API
   through the remoting pipeline (protocol codecs → server backend → client shim
   → end-to-end test), as implemented in the `graftx-protocol`, `graftx-server`,
