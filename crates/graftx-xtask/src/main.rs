@@ -61,6 +61,10 @@ fn run(args: &[String]) -> ExitCode {
             print!("{}", opcodes::render_stats(opcodes::OPCODES));
             ExitCode::SUCCESS
         }
+        "apis" => {
+            print!("{}", opcodes::render_apis(opcodes::OPCODES));
+            ExitCode::SUCCESS
+        }
         "opcodes-lock" => opcodes_lock(&args[1..], Path::new(OPCODES_LOCK)),
         "verify" => verify(
             Path::new(DOCS_DIR),
@@ -291,6 +295,7 @@ Subcommands:
     gen-opcodes    Generate the opcode-table source from graftx-protocol
     coverage       Summarize opcode coverage per API as a Markdown roll-up
     stats          Print opcode totals, distinct API count, and per-API roll-up
+    apis           List the distinct API ids and names as a Markdown table
     opcodes-lock   Freeze (--write) or verify (--check, default) the opcode lock
     check-xrefs    Validate cross-references between the docs and the protocol
     verify         Run check-xrefs and opcodes-lock --check together (CI gate)
@@ -333,6 +338,11 @@ mod tests {
     #[test]
     fn stats_succeeds() {
         assert_eq!(run(&argv(&["stats"])), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn apis_succeeds() {
+        assert_eq!(run(&argv(&["apis"])), ExitCode::SUCCESS);
     }
 
     #[test]

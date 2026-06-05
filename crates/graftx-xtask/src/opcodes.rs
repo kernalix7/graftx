@@ -404,6 +404,38 @@ pub fn render_stats(entries: &[OpcodeEntry]) -> String {
     out
 }
 
+/// Render a Markdown table of the distinct APIs: one `| ApiId | API |` row per
+/// unique `(api_id, api_name)` pair in `entries`, sorted by `api_id`.
+///
+/// Pure and deterministic. The `ApiId` column is the API byte as hex (`0x00`,
+/// `0x01`, …) so the listing reads the same way the opcode table's high byte
+/// does. Rows are sorted by `api_id`, ties broken by first appearance in
+/// `entries`, matching how [`render_coverage`] orders its per-API rows so the
+/// two stay consistent. The output ends with a trailing newline so it composes
+/// cleanly with files or stdout.
+pub fn render_apis(entries: &[OpcodeEntry]) -> String {
+    // Collect each distinct (api_id, api_name) pair in first-seen order, then
+    // sort by api_id keeping that order as the stable tie-breaker — the same
+    // grouping `render_coverage` and `render_stats` use.
+    let mut apis: Vec<(u8, &'static str)> = Vec::new();
+    for entry in entries {
+        let key = (entry.api_id, entry.api_name);
+        if !apis.contains(&key) {
+            apis.push(key);
+        }
+    }
+    // `sort_by_key` is stable, so equal `api_id`s keep their first-seen order.
+    apis.sort_by_key(|(id, _)| *id);
+
+    let mut out = String::new();
+    out.push_str("| ApiId | API |\n");
+    out.push_str("| --- | --- |\n");
+    for (id, name) in &apis {
+        out.push_str(&format!("| 0x{id:02X} | {name} |\n"));
+    }
+    out
+}
+
 /// Header comment written at the top of the opcode lockfile.
 ///
 /// The lockfile is generated; the comment says so and points at the command
@@ -710,6 +742,92 @@ mod tests {
     #[test]
     fn stats_ends_with_newline() {
         assert!(render_stats(OPCODES).ends_with('\n'));
+    }
+
+    #[test]
+    fn apis_lists_distinct_pairs_sorted_by_id_on_fixture() {
+        // Pairs deliberately out of api_id order, with a duplicate Core call: the
+        // listing must collapse the duplicate and emit ascending api_id.
+        let fixture = &[
+            OpcodeEntry {
+                api_name: "Vulkan",
+                api_id: 0x01,
+                name: "CREATE_INSTANCE",
+                call_id: 0x0001,
+            },
+            OpcodeEntry {
+                api_name: "Core",
+                api_id: 0x00,
+                name: "HELLO",
+                call_id: 0x000001,
+            },
+            OpcodeEntry {
+                api_name: "Core",
+                api_id: 0x00,
+                name: "WELCOME",
+                call_id: 0x000002,
+            },
+        ];
+        let table = render_apis(fixture);
+        assert_eq!(
+            table,
+            "| ApiId | API |\n| --- | --- |\n| 0x00 | Core |\n| 0x01 | Vulkan |\n"
+        );
+    }
+
+    #[test]
+    fn apis_has_header_and_separator() {
+        let table = render_apis(OPCODES);
+        let mut lines = table.lines();
+        assert_eq!(lines.next(), Some("| ApiId | API |"));
+        assert_eq!(lines.next(), Some("| --- | --- |"));
+    }
+
+    #[test]
+    fn apis_renders_id_as_padded_hex() {
+        let table = render_apis(OPCODES);
+        assert!(
+            table.contains("| 0x00 | Core |"),
+            "missing Core row in:\n{table}"
+        );
+        assert!(
+            table.contains("| 0x0A | Sycl |"),
+            "missing Sycl row (two-digit hex) in:\n{table}"
+        );
+    }
+
+    #[test]
+    fn apis_has_one_row_per_distinct_api() {
+        let table = render_apis(OPCODES);
+        // Header + separator + one row per distinct (api_id, api_name) pair.
+        let mut seen: Vec<(u8, &'static str)> = Vec::new();
+        for entry in OPCODES {
+            let key = (entry.api_id, entry.api_name);
+            if !seen.contains(&key) {
+                seen.push(key);
+            }
+        }
+        let data_rows = table.lines().count() - 2;
+        assert_eq!(data_rows, seen.len());
+        // Twelve distinct APIs in the canonical list, matching `render_stats`.
+        assert_eq!(data_rows, 12);
+    }
+
+    #[test]
+    fn apis_orders_rows_by_api_id() {
+        let table = render_apis(OPCODES);
+        let core = table.find("| Core |").expect("Core row present");
+        let vulkan = table.find("| Vulkan |").expect("Vulkan row present");
+        let amf = table.find("| Amf |").expect("Amf row present");
+        assert!(
+            core < vulkan && vulkan < amf,
+            "rows should ascend by api_id (Core, Vulkan, …, Amf):\n{table}"
+        );
+    }
+
+    #[test]
+    fn apis_ends_with_newline() {
+        assert!(render_apis(OPCODES).ends_with('\n'));
     }
 
     #[test]
