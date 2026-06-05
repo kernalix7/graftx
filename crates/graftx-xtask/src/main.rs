@@ -8,6 +8,9 @@
 //! `gen-opcodes` renders the opcode table to stdout. `opcodes-lock` freezes the
 //! opcode table to `docs/design/opcodes.lock` (`--write`) and verifies it
 //! (`--check`), so an accidental opcode renumbering surfaces as a failed check.
+//! `opcodes-md` writes the same opcode table as a titled, human-readable
+//! `docs/design/OPCODES.md` (`--write`) and verifies it (`--check`), so the
+//! published table stays in sync with the source of truth.
 //! `check-xrefs` lints the Markdown under `docs/` for broken relative links and
 //! out-of-range chapter references, exiting non-zero when it finds problems so
 //! CI can gate on it. `verify` runs `check-xrefs` and `opcodes-lock --check`
@@ -29,6 +32,10 @@ const DOCS_DIR: &str = "docs";
 
 /// Lockfile written and verified by `opcodes-lock`, relative to the repo root.
 const OPCODES_LOCK: &str = "docs/design/opcodes.lock";
+
+/// Human-readable opcode-table doc written and verified by `opcodes-md`,
+/// relative to the repo root.
+const OPCODES_MD: &str = "docs/design/OPCODES.md";
 
 fn main() -> ExitCode {
     // Skip argv[0] (the binary path); the dispatcher only cares about the
@@ -66,6 +73,7 @@ fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         "opcodes-lock" => opcodes_lock(&args[1..], Path::new(OPCODES_LOCK)),
+        "opcodes-md" => opcodes_md(&args[1..], Path::new(OPCODES_MD)),
         "verify" => verify(
             Path::new(DOCS_DIR),
             Path::new(OPCODES_LOCK),
@@ -170,6 +178,68 @@ fn opcodes_lock(args: &[String], lock_path: &Path) -> ExitCode {
                 eprintln!(
                     "opcodes-lock: cannot read {}: {error} — run `cargo xtask opcodes-lock --write`",
                     lock_path.display()
+                );
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+/// Run the `opcodes-md` subcommand against the doc at `doc_path`.
+///
+/// Mirrors [`opcodes_lock`]: `--write` renders the canonical Markdown doc
+/// ([`opcodes::render_doc`]) and writes it, reporting the path and opcode count;
+/// `--check` (the default) renders the same content and compares it to the file
+/// on disk, returning [`ExitCode::FAILURE`] — naming the first differing line, or
+/// noting the file is missing — when they diverge, and [`ExitCode::SUCCESS`] when
+/// they match. The renderer is deterministic, so a freshly written file always
+/// passes a subsequent check. The two arms reuse [`parse_lock_mode`] and
+/// [`opcodes::check_doc`] so the doc and lock subcommands stay consistent.
+fn opcodes_md(args: &[String], doc_path: &Path) -> ExitCode {
+    let mode = match parse_lock_mode(args) {
+        Ok(mode) => mode,
+        Err(e) => {
+            eprintln!("opcodes-md: {e}");
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    let rendered = opcodes::render_doc(opcodes::OPCODES);
+
+    match mode {
+        LockMode::Write => match std::fs::write(doc_path, &rendered) {
+            Ok(()) => {
+                println!(
+                    "opcodes-md: wrote {} ({} opcode(s))",
+                    doc_path.display(),
+                    opcodes::OPCODES.len()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("opcodes-md: failed to write {}: {e}", doc_path.display());
+                ExitCode::FAILURE
+            }
+        },
+        // `--check` delegates the read-and-compare to `opcodes::check_doc`, the
+        // doc-rendering twin of `check_lock`; the reporting and exit code mirror
+        // the `opcodes-lock --check` arm.
+        LockMode::Check => match opcodes::check_doc(doc_path, opcodes::OPCODES) {
+            opcodes::LockStatus::UpToDate => {
+                println!("opcodes-md: {} is up to date", doc_path.display());
+                ExitCode::SUCCESS
+            }
+            opcodes::LockStatus::Stale { on_disk, expected } => {
+                eprintln!(
+                    "opcodes-md: {} is out of date — run `cargo xtask opcodes-md --write`",
+                    doc_path.display()
+                );
+                report_first_difference(&mut std::io::stderr(), &on_disk, &expected);
+                ExitCode::FAILURE
+            }
+            opcodes::LockStatus::Unreadable { error } => {
+                eprintln!(
+                    "opcodes-md: cannot read {}: {error} — run `cargo xtask opcodes-md --write`",
+                    doc_path.display()
                 );
                 ExitCode::FAILURE
             }
@@ -297,6 +367,7 @@ Subcommands:
     stats          Print opcode totals, distinct API count, and per-API roll-up
     apis           List the distinct API ids and names as a Markdown table
     opcodes-lock   Freeze (--write) or verify (--check, default) the opcode lock
+    opcodes-md     Write (--write) or verify (--check, default) docs/design/OPCODES.md
     check-xrefs    Validate cross-references between the docs and the protocol
     verify         Run check-xrefs and opcodes-lock --check together (CI gate)
     help           Show this message"
@@ -405,6 +476,18 @@ mod tests {
         path
     }
 
+    /// A unique temp path for an `OPCODES.md` fixture, kept separate from
+    /// [`temp_lock_path`] so the doc and lock tests never share a file.
+    fn temp_doc_path(tag: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        path.push(format!("graftx-xtask-opcodes-md-{tag}-{nanos}.md"));
+        path
+    }
+
     #[test]
     fn write_then_check_roundtrips() {
         let path = temp_lock_path("roundtrip");
@@ -437,6 +520,49 @@ mod tests {
         let path = temp_lock_path("badflag");
         assert_eq!(
             opcodes_lock(&argv(&["--frob"]), &path),
+            ExitCode::from(EXIT_USAGE)
+        );
+    }
+
+    #[test]
+    fn opcodes_md_is_a_known_subcommand() {
+        // Dispatched (not a usage error); the default `--check` against the real
+        // working directory may pass or fail depending on the checkout, so we
+        // only assert it is recognized.
+        assert_ne!(run(&argv(&["opcodes-md"])), ExitCode::from(EXIT_USAGE));
+    }
+
+    #[test]
+    fn opcodes_md_write_then_check_roundtrips() {
+        let path = temp_doc_path("roundtrip");
+        assert_eq!(opcodes_md(&argv(&["--write"]), &path), ExitCode::SUCCESS);
+        // The freshly written doc must satisfy a subsequent check.
+        assert_eq!(opcodes_md(&argv(&["--check"]), &path), ExitCode::SUCCESS);
+        // Default (no flag) is also a check and must pass.
+        assert_eq!(opcodes_md(&[], &path), ExitCode::SUCCESS);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opcodes_md_check_fails_when_file_missing() {
+        let path = temp_doc_path("missing");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(opcodes_md(&argv(&["--check"]), &path), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn opcodes_md_check_fails_when_content_differs() {
+        let path = temp_doc_path("stale");
+        std::fs::write(&path, "# not the generated doc\n").expect("seed stale doc");
+        assert_eq!(opcodes_md(&argv(&["--check"]), &path), ExitCode::FAILURE);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opcodes_md_rejects_unknown_flag() {
+        let path = temp_doc_path("badflag");
+        assert_eq!(
+            opcodes_md(&argv(&["--frob"]), &path),
             ExitCode::from(EXIT_USAGE)
         );
     }
