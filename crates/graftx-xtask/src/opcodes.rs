@@ -226,6 +226,36 @@ pub fn render_coverage(entries: &[OpcodeEntry]) -> String {
     out
 }
 
+/// Render a compact Markdown stats block summarizing `entries`: the total
+/// opcode count, the number of distinct APIs, and the per-API coverage table.
+///
+/// Pure and deterministic. The summary line is followed by the same per-API
+/// roll-up [`render_coverage`] produces, so the two stay consistent and the
+/// per-API ordering rule (by `api_id`, ties by first appearance) is shared
+/// rather than duplicated. "Distinct APIs" counts unique `(api_id, api_name)`
+/// pairs, matching the rows [`render_coverage`] emits. The output ends with a
+/// trailing newline so it composes cleanly with files or stdout.
+pub fn render_stats(entries: &[OpcodeEntry]) -> String {
+    let total = entries.len();
+    // Count distinct (api_id, api_name) pairs the same way `render_coverage`
+    // groups them, so "distinct APIs" equals the number of per-API rows below.
+    let mut seen: Vec<(u8, &'static str)> = Vec::new();
+    for entry in entries {
+        let key = (entry.api_id, entry.api_name);
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    let distinct_apis = seen.len();
+
+    let mut out = String::new();
+    out.push_str("# Opcode stats\n\n");
+    out.push_str(&format!("- Total opcodes: {total}\n"));
+    out.push_str(&format!("- Distinct APIs: {distinct_apis}\n\n"));
+    out.push_str(&render_coverage(entries));
+    out
+}
+
 /// Header comment written at the top of the opcode lockfile.
 ///
 /// The lockfile is generated; the comment says so and points at the command
@@ -454,6 +484,52 @@ mod tests {
         assert!(*counts.get("Vulkan").unwrap_or(&0) >= 11, "Vulkan opcodes");
         assert!(*counts.get("OpenGl").unwrap_or(&0) >= 3, "OpenGl opcodes");
         assert!(*counts.get("Cuda").unwrap_or(&0) >= 3, "Cuda opcodes");
+    }
+
+    #[test]
+    fn stats_reports_total_and_distinct_apis_on_fixture() {
+        let fixture = &[
+            OpcodeEntry {
+                api_name: "Core",
+                api_id: 0x00,
+                name: "HELLO",
+                call_id: 0x000001,
+            },
+            OpcodeEntry {
+                api_name: "Core",
+                api_id: 0x00,
+                name: "WELCOME",
+                call_id: 0x000002,
+            },
+            OpcodeEntry {
+                api_name: "Vulkan",
+                api_id: 0x01,
+                name: "CREATE_INSTANCE",
+                call_id: 0x0001,
+            },
+        ];
+        let stats = render_stats(fixture);
+        assert!(stats.contains("- Total opcodes: 3"), "stats:\n{stats}");
+        assert!(stats.contains("- Distinct APIs: 2"), "stats:\n{stats}");
+        // The coverage roll-up is embedded, so the TOTAL row matches the count.
+        assert!(stats.contains("| TOTAL | 3 |"), "stats:\n{stats}");
+    }
+
+    #[test]
+    fn stats_total_and_distinct_match_real_opcodes() {
+        let stats = render_stats(OPCODES);
+        assert!(
+            stats.contains(&format!("- Total opcodes: {}", OPCODES.len())),
+            "total should equal the opcode count ({}):\n{stats}",
+            OPCODES.len()
+        );
+        // Core, Vulkan, OpenGl, Cuda — four distinct APIs in the canonical list.
+        assert!(stats.contains("- Distinct APIs: 4"), "stats:\n{stats}");
+    }
+
+    #[test]
+    fn stats_ends_with_newline() {
+        assert!(render_stats(OPCODES).ends_with('\n'));
     }
 
     #[test]
