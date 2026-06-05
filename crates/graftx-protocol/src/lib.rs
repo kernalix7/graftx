@@ -184,6 +184,12 @@ pub mod cuda_op {
     pub const MEM_ALLOC: u32 = opcode(ApiId::Cuda, 0x0002);
     /// `cuMemFree`: free a previously allocated device pointer.
     pub const MEM_FREE: u32 = opcode(ApiId::Cuda, 0x0003);
+    /// `cuLaunchKernel`: launch a kernel function over a grid of blocks.
+    pub const LAUNCH_KERNEL: u32 = opcode(ApiId::Cuda, 0x0010);
+    /// `cuMemcpyHtoD`: copy from host memory to a device pointer.
+    pub const MEMCPY_HTOD: u32 = opcode(ApiId::Cuda, 0x0011);
+    /// `cuMemcpyDtoH`: copy from a device pointer to host memory.
+    pub const MEMCPY_DTOH: u32 = opcode(ApiId::Cuda, 0x0012);
 }
 
 /// HIP opcodes (under [`ApiId::Hip`]).
@@ -1052,8 +1058,10 @@ pub mod gl {
 /// raw 64-bit value (see [`Handle::raw`]). Short buffers decode to
 /// [`ProtocolError::UnexpectedEof`].
 ///
-/// [`cuda_op::MEM_FREE`](super::cuda_op::MEM_FREE) replies with an empty (ack)
-/// body, so its response needs no struct here.
+/// [`cuda_op::MEM_FREE`](super::cuda_op::MEM_FREE),
+/// [`cuda_op::LAUNCH_KERNEL`](super::cuda_op::LAUNCH_KERNEL), and
+/// [`cuda_op::MEMCPY_HTOD`](super::cuda_op::MEMCPY_HTOD) reply with an empty
+/// (ack) body, so their responses need no struct here.
 pub mod cuda {
     use super::{Handle, ProtocolError, Reader};
 
@@ -1171,6 +1179,140 @@ pub mod cuda {
             Ok(Self {
                 dptr: Handle::from_raw(r.u64()?),
             })
+        }
+    }
+
+    /// Request body for
+    /// [`cuda_op::LAUNCH_KERNEL`](super::cuda_op::LAUNCH_KERNEL).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LaunchKernelRequest {
+        /// Handle naming the kernel function being launched.
+        pub function: Handle,
+        /// Number of blocks in the grid along X.
+        pub grid_x: u32,
+        /// Number of blocks in the grid along Y.
+        pub grid_y: u32,
+        /// Number of blocks in the grid along Z.
+        pub grid_z: u32,
+        /// Number of threads per block along X.
+        pub block_x: u32,
+        /// Number of threads per block along Y.
+        pub block_y: u32,
+        /// Number of threads per block along Z.
+        pub block_z: u32,
+    }
+
+    impl LaunchKernelRequest {
+        /// Append the encoded body to `out`: a raw `u64` function handle followed
+        /// by the three `u32` grid dimensions then the three `u32` block
+        /// dimensions.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.function.raw().to_le_bytes());
+            out.extend_from_slice(&self.grid_x.to_le_bytes());
+            out.extend_from_slice(&self.grid_y.to_le_bytes());
+            out.extend_from_slice(&self.grid_z.to_le_bytes());
+            out.extend_from_slice(&self.block_x.to_le_bytes());
+            out.extend_from_slice(&self.block_y.to_le_bytes());
+            out.extend_from_slice(&self.block_z.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                function: Handle::from_raw(r.u64()?),
+                grid_x: r.u32()?,
+                grid_y: r.u32()?,
+                grid_z: r.u32()?,
+                block_x: r.u32()?,
+                block_y: r.u32()?,
+                block_z: r.u32()?,
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`cuda_op::MEMCPY_HTOD`](super::cuda_op::MEMCPY_HTOD).
+    ///
+    /// This carries only the copy descriptor; the `len` bytes ride the bulk
+    /// plane. The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemcpyHtoDRequest {
+        /// Handle naming the destination device pointer.
+        pub dst: Handle,
+        /// Number of bytes copied from host to device.
+        pub len: u64,
+    }
+
+    impl MemcpyHtoDRequest {
+        /// Append the encoded body to `out`: a raw `u64` destination handle
+        /// followed by the `u64` copy length.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.dst.raw().to_le_bytes());
+            out.extend_from_slice(&self.len.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                dst: Handle::from_raw(r.u64()?),
+                len: r.u64()?,
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`cuda_op::MEMCPY_DTOH`](super::cuda_op::MEMCPY_DTOH).
+    ///
+    /// This carries only the copy descriptor; the copied bytes ride the bulk
+    /// plane.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemcpyDtoHRequest {
+        /// Handle naming the source device pointer.
+        pub src: Handle,
+        /// Number of bytes copied from device to host.
+        pub len: u64,
+    }
+
+    impl MemcpyDtoHRequest {
+        /// Append the encoded body to `out`: a raw `u64` source handle followed
+        /// by the `u64` copy length.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.src.raw().to_le_bytes());
+            out.extend_from_slice(&self.len.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                src: Handle::from_raw(r.u64()?),
+                len: r.u64()?,
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`cuda_op::MEMCPY_DTOH`](super::cuda_op::MEMCPY_DTOH).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MemcpyDtoHResponse {
+        /// Number of bytes actually copied from device to host.
+        pub copied: u64,
+    }
+
+    impl MemcpyDtoHResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.copied.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self { copied: r.u64()? })
         }
     }
 }
@@ -3089,11 +3231,19 @@ mod tests {
         assert_eq!(opcode_api(cuda_op::CTX_CREATE), ApiId::Cuda as u8);
         assert_eq!(opcode_api(cuda_op::MEM_ALLOC), ApiId::Cuda as u8);
         assert_eq!(opcode_api(cuda_op::MEM_FREE), ApiId::Cuda as u8);
+        assert_eq!(opcode_api(cuda_op::LAUNCH_KERNEL), ApiId::Cuda as u8);
+        assert_eq!(opcode_api(cuda_op::MEMCPY_HTOD), ApiId::Cuda as u8);
+        assert_eq!(opcode_api(cuda_op::MEMCPY_DTOH), ApiId::Cuda as u8);
         assert_eq!(opcode_call(cuda_op::CTX_CREATE), 0x0001);
         assert_eq!(opcode_call(cuda_op::MEM_ALLOC), 0x0002);
         assert_eq!(opcode_call(cuda_op::MEM_FREE), 0x0003);
+        assert_eq!(opcode_call(cuda_op::LAUNCH_KERNEL), 0x0010);
+        assert_eq!(opcode_call(cuda_op::MEMCPY_HTOD), 0x0011);
+        assert_eq!(opcode_call(cuda_op::MEMCPY_DTOH), 0x0012);
         assert_ne!(cuda_op::CTX_CREATE, cuda_op::MEM_ALLOC);
         assert_ne!(cuda_op::MEM_ALLOC, cuda_op::MEM_FREE);
+        assert_ne!(cuda_op::LAUNCH_KERNEL, cuda_op::MEMCPY_HTOD);
+        assert_ne!(cuda_op::MEMCPY_HTOD, cuda_op::MEMCPY_DTOH);
     }
 
     #[test]
@@ -3147,6 +3297,55 @@ mod tests {
     }
 
     #[test]
+    fn cuda_launch_kernel_roundtrip() {
+        let req = cuda::LaunchKernelRequest {
+            function: Handle::new(9, 6, 21),
+            grid_x: 0x1111_2222,
+            grid_y: 0x3333_4444,
+            grid_z: 0x5555_6666,
+            block_x: 0x7777_8888,
+            block_y: 0x9999_AAAA,
+            block_z: 0xBBBB_CCCC,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8 + 6 * 4);
+        assert_eq!(cuda::LaunchKernelRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn cuda_memcpy_htod_roundtrip() {
+        let req = cuda::MemcpyHtoDRequest {
+            dst: Handle::new(8, 4, 13),
+            len: 0x0123_4567_89AB_CDEF,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(cuda::MemcpyHtoDRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn cuda_memcpy_dtoh_roundtrip() {
+        let req = cuda::MemcpyDtoHRequest {
+            src: Handle::new(8, 1, 99),
+            len: 0xFEDC_BA98_7654_3210,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(cuda::MemcpyDtoHRequest::decode(&b).expect("req"), req);
+
+        let resp = cuda::MemcpyDtoHResponse {
+            copied: 0x0000_0000_DEAD_BEEF,
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(cuda::MemcpyDtoHResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
     fn cuda_bodies_reject_short_buffers() {
         assert_eq!(
             cuda::CtxCreateRequest::decode(&[0u8; 3]),
@@ -3166,6 +3365,22 @@ mod tests {
         );
         assert_eq!(
             cuda::MemFreeRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cuda::LaunchKernelRequest::decode(&[0u8; 31]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cuda::MemcpyHtoDRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cuda::MemcpyDtoHRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            cuda::MemcpyDtoHResponse::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
