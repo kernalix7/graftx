@@ -82,6 +82,31 @@ impl ObsRegistry {
         self.lock().clone()
     }
 
+    /// Return a point-in-time copy of the per-API statistics sorted by API name.
+    ///
+    /// Unlike [`snapshot`](Self::snapshot), the entries are returned in a
+    /// deterministic order (ascending by `&'static str` API name), which makes
+    /// the result suitable for stable display or comparison.
+    pub fn snapshot_sorted(&self) -> Vec<(&'static str, CallStats)> {
+        let guard = self.lock();
+        let mut rows: Vec<(&'static str, CallStats)> =
+            guard.iter().map(|(api, stats)| (*api, *stats)).collect();
+        // Drop the guard before sorting so the lock is held only as long as the
+        // snapshot of rows takes to copy out.
+        drop(guard);
+        rows.sort_by_key(|(api, _)| *api);
+        rows
+    }
+
+    /// Clear all recorded per-API statistics, leaving the registry empty.
+    ///
+    /// After this returns, [`snapshot`](Self::snapshot) is empty and
+    /// [`total`](Self::total) is [`CallStats::default`]. Like every other
+    /// accessor, this recovers from a poisoned lock rather than panicking.
+    pub fn reset(&self) {
+        self.lock().clear();
+    }
+
     /// Merge every per-API entry into a single aggregate [`CallStats`].
     ///
     /// All fields saturate at [`u64::MAX`] via [`CallStats::merge`].
@@ -101,19 +126,12 @@ impl ObsRegistry {
     /// row aggregating every API via [`total`](Self::total). Counts are written
     /// as plain integers.
     pub fn report(&self) -> String {
-        let guard = self.lock();
-
-        let mut rows: Vec<(&'static str, CallStats)> =
-            guard.iter().map(|(api, stats)| (*api, *stats)).collect();
-        rows.sort_by_key(|(api, _)| *api);
+        let rows = self.snapshot_sorted();
 
         let mut total = CallStats::default();
         for (_, stats) in &rows {
             total.merge(stats);
         }
-        // Drop the guard before formatting so the lock is held only as long as
-        // the snapshot of rows takes to copy out.
-        drop(guard);
 
         let mut out = String::new();
         out.push_str("| API | Calls | Bytes Out | Bytes In |\n");
@@ -166,6 +184,96 @@ mod tests {
                 bytes_in: 0,
             }
         );
+    }
+
+    #[test]
+    fn snapshot_sorted_is_ordered_and_matches_snapshot() {
+        let registry = ObsRegistry::new();
+        registry.record("NtCreateFile", 10, 20);
+        registry.record("NtCreateFile", 5, 7);
+        registry.record("NtClose", 1, 0);
+        registry.record("NtReadFile", 3, 9);
+
+        let sorted = registry.snapshot_sorted();
+
+        // Entries are ascending by API name.
+        let names: Vec<&'static str> = sorted.iter().map(|(api, _)| *api).collect();
+        assert_eq!(names, ["NtClose", "NtCreateFile", "NtReadFile"]);
+
+        // The sorted view holds exactly the same entries as the unordered one.
+        let snapshot = registry.snapshot();
+        assert_eq!(sorted.len(), snapshot.len());
+        for (api, stats) in &sorted {
+            assert_eq!(snapshot[api], *stats);
+        }
+        assert_eq!(
+            sorted,
+            vec![
+                (
+                    "NtClose",
+                    CallStats {
+                        calls: 1,
+                        bytes_out: 1,
+                        bytes_in: 0,
+                    }
+                ),
+                (
+                    "NtCreateFile",
+                    CallStats {
+                        calls: 2,
+                        bytes_out: 15,
+                        bytes_in: 27,
+                    }
+                ),
+                (
+                    "NtReadFile",
+                    CallStats {
+                        calls: 1,
+                        bytes_out: 3,
+                        bytes_in: 9,
+                    }
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_sorted_of_empty_registry_is_empty() {
+        let registry = ObsRegistry::new();
+        assert!(registry.snapshot_sorted().is_empty());
+    }
+
+    #[test]
+    fn reset_clears_all_recorded_stats() {
+        let registry = ObsRegistry::new();
+        registry.record("NtCreateFile", 10, 20);
+        registry.record("NtClose", 1, 3);
+        assert!(!registry.snapshot().is_empty());
+
+        registry.reset();
+
+        assert!(registry.snapshot().is_empty());
+        assert!(registry.snapshot_sorted().is_empty());
+        assert_eq!(registry.total(), CallStats::default());
+
+        // The registry is still usable after a reset.
+        registry.record("NtReadFile", 4, 5);
+        assert_eq!(
+            registry.snapshot()["NtReadFile"],
+            CallStats {
+                calls: 1,
+                bytes_out: 4,
+                bytes_in: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn reset_of_empty_registry_is_a_noop() {
+        let registry = ObsRegistry::new();
+        registry.reset();
+        assert!(registry.snapshot().is_empty());
+        assert_eq!(registry.total(), CallStats::default());
     }
 
     #[test]
