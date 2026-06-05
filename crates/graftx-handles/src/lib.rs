@@ -17,6 +17,25 @@
 use graftx_protocol::Handle;
 use thiserror::Error;
 
+/// The reserved null [`Handle`]: the raw wire value `0`.
+///
+/// This unpacks to `kind = 0`, `generation = 0`, `slot = 0`, and is intended as
+/// a sentinel for "no handle" on the wire — the moral equivalent of a null
+/// pointer.
+///
+/// # Caveat
+///
+/// The value `0` is *not* intrinsically invalid: it is the exact handle a
+/// freshly created table hands out for the very first `insert(0, _)` (slot `0`,
+/// generation `0`, kind `0`). `NULL_HANDLE` is therefore a *convention* rather
+/// than a guaranteed-unresolvable handle. A table that never inserts under
+/// `kind = 0` — or, more robustly, one whose callers treat `NULL_HANDLE` as
+/// reserved and never store anything under it — will always report
+/// [`HandleTable::contains(NULL_HANDLE)`](HandleTable::contains)` == false`. Do
+/// not rely on `NULL_HANDLE` being rejected by an arbitrary populated table;
+/// rely on it only as a sentinel your own code declines to allocate.
+pub const NULL_HANDLE: Handle = Handle::from_raw(0);
+
 /// Errors that can arise when operating on a [`HandleTable`].
 ///
 /// The primary `get`/`get_mut`/`remove` accessors use an `Option` API, but this
@@ -263,6 +282,20 @@ impl<T> HandleTable<T> {
     #[must_use]
     pub fn is_live(&self, h: Handle) -> bool {
         self.get(h).is_some()
+    }
+
+    /// Whether the table currently contains the entry referenced by `h`.
+    ///
+    /// This is an alias for [`is_live`](Self::is_live): it applies the identical
+    /// validation as [`get`](Self::get) — the slot index must be in range, the
+    /// slot must hold a value, and the handle's generation must match the slot's
+    /// — and returns `false` for an out-of-range, empty, retired, or stale
+    /// (post-reuse) handle. In particular, [`NULL_HANDLE`] is contained only if
+    /// slot `0` is live under generation `0` and was inserted with kind `0`; see
+    /// the [`NULL_HANDLE`] caveat.
+    #[must_use]
+    pub fn contains(&self, h: Handle) -> bool {
+        self.is_live(h)
     }
 
     /// The sorted, de-duplicated `kind` bytes present among live entries.
@@ -727,6 +760,114 @@ mod tests {
         assert_ne!(fresh.generation(), h.generation());
         assert!(!table.is_live(h));
         assert!(table.is_live(fresh));
+    }
+
+    #[test]
+    fn contains_matches_is_live_across_insert_remove_and_stale() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+
+        // A fresh handle is contained, and contains() agrees with is_live().
+        let h = table.insert(KIND, 1);
+        assert!(table.contains(h));
+        assert_eq!(table.contains(h), table.is_live(h));
+
+        // After removal the handle is no longer contained.
+        assert_eq!(table.remove(h), Some(1));
+        assert!(!table.contains(h));
+        assert_eq!(table.contains(h), table.is_live(h));
+
+        // The freed slot is reused under a bumped generation; the stale handle
+        // stays uncontained while the fresh one is contained, and contains()
+        // tracks is_live() for both.
+        let fresh = table.insert(KIND, 2);
+        assert_eq!(fresh.slot(), h.slot());
+        assert_ne!(fresh.generation(), h.generation());
+        assert!(!table.contains(h));
+        assert!(table.contains(fresh));
+        assert_eq!(table.contains(h), table.is_live(h));
+        assert_eq!(table.contains(fresh), table.is_live(fresh));
+    }
+
+    #[test]
+    fn contains_rejects_out_of_range_and_retired_handles() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+
+        // An out-of-range handle (no slots allocated yet) is never contained.
+        let dangling = Handle::new(KIND, 0, 7);
+        assert!(!table.contains(dangling));
+        assert_eq!(table.contains(dangling), table.is_live(dangling));
+
+        // Drive slot 0 to GENERATION_MAX, then retire it on the final removal.
+        let mut last = table.insert(KIND, 0);
+        while last.generation() < Handle::GENERATION_MAX {
+            assert_eq!(table.remove(last), Some(0));
+            last = table.insert(KIND, 0);
+            assert_eq!(last.slot(), 0);
+        }
+        assert_eq!(table.remove(last), Some(0));
+        assert_eq!(table.retired(), 1);
+
+        // A handle to the retired slot is not contained, matching is_live().
+        assert!(!table.contains(last));
+        assert_eq!(table.contains(last), table.is_live(last));
+    }
+
+    #[test]
+    fn null_handle_is_not_contained_in_fresh_or_populated_table() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+
+        // NULL_HANDLE round-trips to the reserved all-zero fields.
+        assert_eq!(NULL_HANDLE.raw(), 0);
+        assert_eq!(NULL_HANDLE.kind(), 0);
+        assert_eq!(NULL_HANDLE.generation(), 0);
+        assert_eq!(NULL_HANDLE.slot(), 0);
+
+        // A fresh table contains nothing, NULL_HANDLE included.
+        assert!(!table.contains(NULL_HANDLE));
+
+        // Validity ignores `kind`, so the only way slot 0 can match NULL_HANDLE
+        // (slot 0, generation 0) is to be live at generation 0. Bump slot 0's
+        // generation once so the populated table cannot collide with it.
+        let first = table.insert(KIND_A, 1);
+        assert_eq!(first.slot(), 0);
+        assert_eq!(first.generation(), 0);
+        assert_eq!(table.remove(first), Some(1));
+
+        // Repopulate: slot 0 is reused at generation 1, and a second live slot
+        // is added. NULL_HANDLE (generation 0) no longer matches slot 0.
+        let a = table.insert(KIND_A, 10);
+        let _b = table.insert(KIND_B, 20);
+        assert_eq!(a.slot(), 0);
+        assert_eq!(a.generation(), 1);
+        assert!(table.contains(a));
+        assert!(!table.contains(NULL_HANDLE));
+
+        // Remove everything; NULL_HANDLE remains uncontained on an empty table
+        // that has nonetheless allocated slots.
+        assert_eq!(table.remove(a), Some(10));
+        assert_eq!(table.remove(_b), Some(20));
+        assert!(table.is_empty());
+        assert!(!table.contains(NULL_HANDLE));
+    }
+
+    #[test]
+    fn null_handle_collides_only_with_live_slot_zero_generation_zero() {
+        // Documents the NULL_HANDLE caveat: validity checks slot/occupancy/
+        // generation but not kind, so a fresh table's very first insert occupies
+        // slot 0 at generation 0 and therefore matches NULL_HANDLE regardless of
+        // the kind it was inserted under.
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let first = table.insert(KIND_A, 1);
+        assert_eq!(first.raw(), Handle::new(KIND_A, 0, 0).raw());
+        assert_ne!(first.kind(), NULL_HANDLE.kind());
+
+        // NULL_HANDLE collides here because slot 0 is live at generation 0.
+        assert!(table.contains(NULL_HANDLE));
+        assert_eq!(table.contains(NULL_HANDLE), table.is_live(NULL_HANDLE));
+
+        // Freeing slot 0 bumps its generation, ending the collision.
+        assert_eq!(table.remove(first), Some(1));
+        assert!(!table.contains(NULL_HANDLE));
     }
 
     #[test]
