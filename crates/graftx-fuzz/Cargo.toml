@@ -1,0 +1,16 @@
+[package]
+name = "graftx-fuzz"
+description = "Deterministic, dependency-free fuzzer for the GraftX protocol decoders."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "graftx-fuzz"
+path = "src/main.rs"
+
+[dependencies]
+graftx-protocol.workspace = true
