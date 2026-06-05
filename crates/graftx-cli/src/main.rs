@@ -5,8 +5,9 @@
 //! [`StreamTransport`], runs [`graftx_client::handshake`], prints the negotiated
 //! [`Welcome`](graftx_protocol::Welcome), and exits. `graftx noop <addr>` does
 //! the same bring-up and then issues a single [`graftx_client::noop`] to confirm
-//! the pipe round-trips, printing `ok`. With no subcommand it prints usage and
-//! the protocol version this build speaks.
+//! the pipe round-trips, printing `ok`. `graftx apis` prints the API namespace
+//! table (the high byte of every opcode) without touching the network. With no
+//! subcommand it prints usage and the protocol version this build speaks.
 //!
 //! Deliberately depends only on the protocol, transport, and client crates —
 //! never the server — so the CLI stays a pure client.
@@ -29,6 +30,27 @@ const EXIT_CONNECT: u8 = 1;
 /// the first follow-up request on the session is 2.
 const NOOP_REQ_ID: u32 = 2;
 const NOOP_SEQ: u64 = 2;
+
+/// The API-namespace table the `apis` subcommand prints: the `(id, name)` pairs
+/// occupying the high byte of every opcode.
+///
+/// Held locally rather than reflected off `graftx_protocol::ApiId` so the CLI
+/// stays a thin client with nothing to enumerate. The ids must track that enum
+/// (Core = 0x00 .. Amf = 0x0B); [`apis_table_matches_protocol`] guards the match.
+const API_IDS: &[(u8, &str)] = &[
+    (0x00, "Core"),
+    (0x01, "Vulkan"),
+    (0x02, "OpenGl"),
+    (0x03, "Cuda"),
+    (0x04, "OpenCl"),
+    (0x05, "Hip"),
+    (0x06, "LevelZero"),
+    (0x07, "Video"),
+    (0x08, "WebGpu"),
+    (0x09, "OptiX"),
+    (0x0A, "Sycl"),
+    (0x0B, "Amf"),
+];
 
 fn main() -> ExitCode {
     // Skip argv[0] (the binary path); the dispatcher only cares about the
@@ -67,6 +89,10 @@ fn run(args: &[String]) -> ExitCode {
                 ExitCode::from(EXIT_USAGE)
             }
         },
+        Some("apis") => {
+            print_apis(&mut io::stdout());
+            ExitCode::SUCCESS
+        }
         Some(other) => {
             eprintln!("graftx: unknown subcommand `{other}`");
             print_usage(&mut io::stderr());
@@ -151,6 +177,18 @@ fn print_welcome<W: Write>(
     writeln!(out, "  max frame body: {} bytes", welcome.max_frame_body)
 }
 
+/// Print the [`API_IDS`] table as a `| ApiId | API |` markdown table.
+///
+/// Best-effort, like [`print_usage`]: the listing is informational, so a broken
+/// pipe on `out` shouldn't disturb the exit code the caller already chose.
+fn print_apis<W: Write>(out: &mut W) {
+    let _ = writeln!(out, "| ApiId | API |");
+    let _ = writeln!(out, "| ----- | --- |");
+    for (id, name) in API_IDS {
+        let _ = writeln!(out, "| {id:#04x} | {name} |");
+    }
+}
+
 /// Print the usage banner and the protocol version this build speaks.
 fn print_usage<W: Write>(out: &mut W) {
     let (major, minor) = graftx_client::protocol_version();
@@ -169,6 +207,10 @@ fn print_usage<W: Write>(out: &mut W) {
     let _ = writeln!(
         out,
         "    graftx noop <addr>       connect, handshake, run one no-op, print ok"
+    );
+    let _ = writeln!(
+        out,
+        "    graftx apis              print the API namespace table"
     );
     let _ = writeln!(out, "    graftx help              show this message");
 }
@@ -224,6 +266,49 @@ mod tests {
         let text = String::from_utf8(buf).expect("usage banner is utf-8");
         assert!(text.contains(&format!("protocol {major}.{minor}")));
         assert!(text.contains("connect <addr>"));
+    }
+
+    #[test]
+    fn apis_subcommand_succeeds() {
+        assert_eq!(run(&args(&["apis"])), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn apis_table_lists_first_and_last_namespaces() {
+        let mut buf = Vec::new();
+        print_apis(&mut buf);
+        let text = String::from_utf8(buf).expect("apis table is utf-8");
+        assert!(text.contains("0x00"));
+        assert!(text.contains("Core"));
+        assert!(text.contains("0x0b"));
+        assert!(text.contains("Amf"));
+    }
+
+    #[test]
+    fn usage_banner_lists_apis_subcommand() {
+        let mut buf = Vec::new();
+        print_usage(&mut buf);
+        let text = String::from_utf8(buf).expect("usage banner is utf-8");
+        assert!(text.contains("graftx apis"));
+    }
+
+    #[test]
+    fn apis_table_matches_protocol() {
+        use graftx_protocol::ApiId;
+
+        // The local table mirrors `ApiId`; pin both ends and the length so a new
+        // variant in the protocol crate forces this list to be updated too.
+        assert_eq!(API_IDS.first(), Some(&(ApiId::Core as u8, "Core")));
+        assert_eq!(API_IDS.last(), Some(&(ApiId::Amf as u8, "Amf")));
+        assert_eq!(
+            API_IDS.len(),
+            (ApiId::Amf as usize) - (ApiId::Core as usize) + 1
+        );
+
+        // Ids are contiguous and ascending from Core.
+        for (offset, (id, _name)) in API_IDS.iter().enumerate() {
+            assert_eq!(usize::from(*id), (ApiId::Core as usize) + offset);
+        }
     }
 
     #[test]
