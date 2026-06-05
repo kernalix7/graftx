@@ -128,6 +128,113 @@ pub mod vk_op {
     pub const DEVICE_WAIT_IDLE: u32 = opcode(ApiId::Vulkan, 0x0008);
 }
 
+/// Vulkan request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the Vulkan opcodes in [`vk_op`].
+/// Every multi-byte field is little-endian and a [`Handle`] is carried as its
+/// raw 64-bit value (see [`Handle::raw`]). Short buffers decode to
+/// [`ProtocolError::UnexpectedEof`].
+pub mod vk {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Request body for [`vk_op::CREATE_INSTANCE`](super::vk_op::CREATE_INSTANCE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateInstanceRequest {
+        /// Application-requested Vulkan API version.
+        pub app_api_version: u32,
+    }
+
+    impl CreateInstanceRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.app_api_version.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                app_api_version: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for [`vk_op::CREATE_INSTANCE`](super::vk_op::CREATE_INSTANCE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateInstanceResponse {
+        /// Handle naming the newly created instance.
+        pub instance: Handle,
+    }
+
+    impl CreateInstanceResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.instance.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                instance: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`vk_op::ENUMERATE_PHYSICAL_DEVICES`](super::vk_op::ENUMERATE_PHYSICAL_DEVICES).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct EnumeratePhysicalDevicesRequest {
+        /// Handle naming the instance whose devices are listed.
+        pub instance: Handle,
+    }
+
+    impl EnumeratePhysicalDevicesRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.instance.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                instance: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`vk_op::ENUMERATE_PHYSICAL_DEVICES`](super::vk_op::ENUMERATE_PHYSICAL_DEVICES).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EnumeratePhysicalDevicesResponse {
+        /// Handles naming the physical devices on the instance.
+        pub devices: Vec<Handle>,
+    }
+
+    impl EnumeratePhysicalDevicesResponse {
+        /// Append the encoded body to `out`: a `u32` count followed by that many
+        /// raw `u64` device handles.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&(self.devices.len() as u32).to_le_bytes());
+            for device in &self.devices {
+                out.extend_from_slice(&device.raw().to_le_bytes());
+            }
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            let count = r.u32()?;
+            let mut devices = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                devices.push(Handle::from_raw(r.u64()?));
+            }
+            Ok(Self { devices })
+        }
+    }
+}
+
 /// The kind of a control-plane frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -528,6 +635,93 @@ mod tests {
             64
         );
         assert_eq!(Handle::GENERATION_MAX, (1 << 24) - 1);
+    }
+
+    #[test]
+    fn vk_create_instance_roundtrip() {
+        let req = vk::CreateInstanceRequest {
+            app_api_version: 0x0040_3000,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 4);
+        assert_eq!(vk::CreateInstanceRequest::decode(&b).expect("req"), req);
+
+        let resp = vk::CreateInstanceResponse {
+            instance: Handle::new(1, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(vk::CreateInstanceResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn vk_enumerate_physical_devices_request_roundtrip() {
+        let req = vk::EnumeratePhysicalDevicesRequest {
+            instance: Handle::new(1, 3, 7),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(
+            vk::EnumeratePhysicalDevicesRequest::decode(&b).expect("req"),
+            req
+        );
+    }
+
+    #[test]
+    fn vk_enumerate_physical_devices_response_empty() {
+        let resp = vk::EnumeratePhysicalDevicesResponse { devices: vec![] };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 4);
+        assert_eq!(
+            vk::EnumeratePhysicalDevicesResponse::decode(&b).expect("resp"),
+            resp
+        );
+    }
+
+    #[test]
+    fn vk_enumerate_physical_devices_response_three() {
+        let resp = vk::EnumeratePhysicalDevicesResponse {
+            devices: vec![
+                Handle::new(2, 0, 0),
+                Handle::new(2, 1, 1),
+                Handle::new(2, Handle::GENERATION_MAX, u32::MAX),
+            ],
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 4 + 3 * 8);
+        assert_eq!(
+            vk::EnumeratePhysicalDevicesResponse::decode(&b).expect("resp"),
+            resp
+        );
+    }
+
+    #[test]
+    fn vk_bodies_reject_short_buffers() {
+        assert_eq!(
+            vk::CreateInstanceRequest::decode(&[0u8; 3]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::CreateInstanceResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::EnumeratePhysicalDevicesRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        // Count says 2 devices but only one handle's worth of bytes follow.
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&2u32.to_le_bytes());
+        truncated.extend_from_slice(&0u64.to_le_bytes());
+        assert_eq!(
+            vk::EnumeratePhysicalDevicesResponse::decode(&truncated),
+            Err(ProtocolError::UnexpectedEof)
+        );
     }
 
     #[test]

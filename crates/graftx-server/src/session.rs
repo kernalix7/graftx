@@ -160,6 +160,10 @@ mod tests {
     }
 
     fn request_frame(opcode: u32) -> Vec<u8> {
+        request_frame_body(opcode, &[])
+    }
+
+    fn request_frame_body(opcode: u32, body: &[u8]) -> Vec<u8> {
         let header = proto::FrameHeader {
             version: proto::PROTOCOL_MAJOR,
             flags: 0,
@@ -167,22 +171,41 @@ mod tests {
             opcode,
             req_id: 7,
             seq: 1,
-            body_len: 0,
+            body_len: body.len() as u32,
         };
-        proto::encode_frame(&header, &[])
+        proto::encode_frame(&header, body)
     }
 
     #[test]
-    fn registered_backend_enumerates_zero_devices() {
+    fn registered_backend_creates_instance_then_one_device() {
         let mut s = Session::new(1);
         s.register(Box::new(crate::VulkanBackend::new()));
-        let frame = request_frame(proto::vk_op::ENUMERATE_PHYSICAL_DEVICES);
-        let reply = s.handle(&frame).expect("handle enumerate");
+
+        // Create an instance.
+        let mut create_body = Vec::new();
+        proto::vk::CreateInstanceRequest { app_api_version: 0 }.encode(&mut create_body);
+        let create_frame = request_frame_body(proto::vk_op::CREATE_INSTANCE, &create_body);
+        let create_reply = s.handle(&create_frame).expect("handle create instance");
+        let (ch, cb) = proto::decode_frame(&create_reply).expect("decode create reply");
+        assert_eq!(ch.opcode, proto::vk_op::CREATE_INSTANCE);
+        assert_eq!(ch.kind, proto::FrameKind::Response);
+        let instance = proto::vk::CreateInstanceResponse::decode(cb)
+            .expect("create response")
+            .instance;
+
+        // Enumerate physical devices on the created instance.
+        let mut enum_body = Vec::new();
+        proto::vk::EnumeratePhysicalDevicesRequest { instance }.encode(&mut enum_body);
+        let enum_frame = request_frame_body(proto::vk_op::ENUMERATE_PHYSICAL_DEVICES, &enum_body);
+        let reply = s.handle(&enum_frame).expect("handle enumerate");
         let (h, b) = proto::decode_frame(&reply).expect("decode reply");
         assert_eq!(h.opcode, proto::vk_op::ENUMERATE_PHYSICAL_DEVICES);
         assert_eq!(h.kind, proto::FrameKind::Response);
         assert_eq!(h.req_id, 7);
-        assert_eq!(b, &0u32.to_le_bytes());
+        let devices = proto::vk::EnumeratePhysicalDevicesResponse::decode(b)
+            .expect("enumerate response")
+            .devices;
+        assert_eq!(devices.len(), 1);
     }
 
     #[test]
