@@ -74,6 +74,8 @@ pub enum ApiId {
     LevelZero = 0x06,
     /// Video codecs (VA-API / VDPAU / NVENC / NVDEC / Vulkan Video).
     Video = 0x07,
+    /// WebGPU.
+    WebGpu = 0x08,
 }
 
 /// Build an opcode from its API namespace and 24-bit call id.
@@ -204,6 +206,18 @@ pub mod video_op {
     pub const DECODE_FRAME: u32 = opcode(ApiId::Video, 0x0002);
     /// Destroy a previously created decode session.
     pub const DESTROY_SESSION: u32 = opcode(ApiId::Video, 0x0003);
+}
+
+/// WebGPU opcodes (under [`ApiId::WebGpu`]).
+pub mod wgpu_op {
+    use super::{opcode, ApiId};
+
+    /// `requestDevice`: acquire a logical device from an adapter.
+    pub const REQUEST_DEVICE: u32 = opcode(ApiId::WebGpu, 0x0001);
+    /// `createBuffer`: create a buffer on a device.
+    pub const CREATE_BUFFER: u32 = opcode(ApiId::WebGpu, 0x0002);
+    /// `destroy`: destroy a previously created buffer.
+    pub const DESTROY_BUFFER: u32 = opcode(ApiId::WebGpu, 0x0003);
 }
 
 /// Vulkan request/response body encoders and decoders.
@@ -1246,6 +1260,126 @@ pub mod video {
             let mut r = Reader::new(buf);
             Ok(Self {
                 session: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// WebGPU request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the WebGPU opcodes in
+/// [`wgpu_op`]. Every multi-byte field is little-endian and a [`Handle`] is
+/// carried as its raw 64-bit value (see [`Handle::raw`]). Short buffers decode
+/// to [`ProtocolError::UnexpectedEof`].
+///
+/// [`wgpu_op::REQUEST_DEVICE`](super::wgpu_op::REQUEST_DEVICE) takes an empty
+/// request body, and
+/// [`wgpu_op::DESTROY_BUFFER`](super::wgpu_op::DESTROY_BUFFER) replies with an
+/// empty (ack) body, so neither needs a struct here.
+pub mod wgpu {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Response body for
+    /// [`wgpu_op::REQUEST_DEVICE`](super::wgpu_op::REQUEST_DEVICE).
+    ///
+    /// The request body is empty, so there is no request struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct RequestDeviceResponse {
+        /// Handle naming the newly acquired device.
+        pub device: Handle,
+    }
+
+    impl RequestDeviceResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.device.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                device: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`wgpu_op::CREATE_BUFFER`](super::wgpu_op::CREATE_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateBufferRequest {
+        /// Handle naming the device the buffer is created on.
+        pub device: Handle,
+        /// Size of the buffer in bytes.
+        pub size: u64,
+        /// Buffer usage flag bits.
+        pub usage: u32,
+    }
+
+    impl CreateBufferRequest {
+        /// Append the encoded body to `out`: a raw `u64` device handle, the
+        /// `u64` buffer size, then the `u32` usage flags.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.device.raw().to_le_bytes());
+            out.extend_from_slice(&self.size.to_le_bytes());
+            out.extend_from_slice(&self.usage.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                device: Handle::from_raw(r.u64()?),
+                size: r.u64()?,
+                usage: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`wgpu_op::CREATE_BUFFER`](super::wgpu_op::CREATE_BUFFER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateBufferResponse {
+        /// Handle naming the newly created buffer.
+        pub buffer: Handle,
+    }
+
+    impl CreateBufferResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.buffer.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                buffer: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`wgpu_op::DESTROY_BUFFER`](super::wgpu_op::DESTROY_BUFFER).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DestroyBufferRequest {
+        /// Handle naming the buffer being destroyed.
+        pub buffer: Handle,
+    }
+
+    impl DestroyBufferRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.buffer.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                buffer: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -2376,6 +2510,86 @@ mod tests {
         );
         assert_eq!(
             video::DestroySessionRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn webgpu_api_id_value() {
+        assert_eq!(ApiId::WebGpu as u8, 0x08);
+    }
+
+    #[test]
+    fn wgpu_opcodes_are_in_webgpu_namespace() {
+        assert_eq!(opcode_api(wgpu_op::REQUEST_DEVICE), ApiId::WebGpu as u8);
+        assert_eq!(opcode_api(wgpu_op::CREATE_BUFFER), ApiId::WebGpu as u8);
+        assert_eq!(opcode_api(wgpu_op::DESTROY_BUFFER), ApiId::WebGpu as u8);
+        assert_eq!(opcode_call(wgpu_op::REQUEST_DEVICE), 0x0001);
+        assert_eq!(opcode_call(wgpu_op::CREATE_BUFFER), 0x0002);
+        assert_eq!(opcode_call(wgpu_op::DESTROY_BUFFER), 0x0003);
+        assert_ne!(wgpu_op::REQUEST_DEVICE, wgpu_op::CREATE_BUFFER);
+        assert_ne!(wgpu_op::CREATE_BUFFER, wgpu_op::DESTROY_BUFFER);
+    }
+
+    #[test]
+    fn wgpu_request_device_response_roundtrip() {
+        let resp = wgpu::RequestDeviceResponse {
+            device: Handle::new(17, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(wgpu::RequestDeviceResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn wgpu_create_buffer_roundtrip() {
+        let req = wgpu::CreateBufferRequest {
+            device: Handle::new(17, 1, 9),
+            size: u64::MAX,
+            usage: 0xDEAD_BEEF,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 20);
+        assert_eq!(wgpu::CreateBufferRequest::decode(&b).expect("req"), req);
+
+        let resp = wgpu::CreateBufferResponse {
+            buffer: Handle::new(18, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(wgpu::CreateBufferResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn wgpu_destroy_buffer_roundtrip() {
+        let req = wgpu::DestroyBufferRequest {
+            buffer: Handle::new(18, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(wgpu::DestroyBufferRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn wgpu_bodies_reject_short_buffers() {
+        assert_eq!(
+            wgpu::RequestDeviceResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            wgpu::CreateBufferRequest::decode(&[0u8; 19]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            wgpu::CreateBufferResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            wgpu::DestroyBufferRequest::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
