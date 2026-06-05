@@ -42,6 +42,12 @@ belongs in `../`, not here.
   through the remoting pipeline (protocol codecs → server backend → client shim
   → end-to-end test), as implemented in the `graftx-protocol`, `graftx-server`,
   and `graftx-client` crates. All backends are remoting-path stubs.
+- [`SECURITY_MODEL.md`](SECURITY_MODEL.md) — security posture as implemented vs.
+  planned: the untrusted-client threat model and the validation the server
+  enforces today (framing checks, opcode-to-registered-backend routing,
+  generational and parent-handle validation in `graftx-server`/`graftx-handles`),
+  plus the planned defenses (copy-to-private/TOCTOU, sandboxing, per-session
+  auth, quotas) cross-referenced to [`plan/23-security.md`](plan/23-security.md).
 
 Protocol and transport design specs are covered in detail by the implementation
 plan ([`plan/06-protocol.md`](plan/06-protocol.md),
