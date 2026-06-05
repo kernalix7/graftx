@@ -146,6 +146,10 @@ pub mod vk_op {
     pub const ALLOCATE_COMMAND_BUFFER: u32 = opcode(ApiId::Vulkan, 0x0021);
     /// `vkQueueSubmit`: submit a command buffer to a queue.
     pub const QUEUE_SUBMIT: u32 = opcode(ApiId::Vulkan, 0x0022);
+    /// `vkCmdCopyBuffer`: record a buffer-to-buffer copy into a command buffer.
+    pub const CMD_COPY_BUFFER: u32 = opcode(ApiId::Vulkan, 0x0023);
+    /// `vkCmdDraw`: record a non-indexed draw into a command buffer.
+    pub const CMD_DRAW: u32 = opcode(ApiId::Vulkan, 0x0024);
 }
 
 /// OpenGL opcodes (under [`ApiId::OpenGl`]).
@@ -729,6 +733,80 @@ pub mod vk {
             Ok(Self {
                 queue: Handle::from_raw(r.u64()?),
                 command_buffer: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`vk_op::CMD_COPY_BUFFER`](super::vk_op::CMD_COPY_BUFFER).
+    ///
+    /// This records into a command buffer; the reply is an empty (ack) body, so
+    /// there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CmdCopyBufferRequest {
+        /// Handle naming the command buffer the copy is recorded into.
+        pub command_buffer: Handle,
+        /// Handle naming the source buffer copied from.
+        pub src: Handle,
+        /// Handle naming the destination buffer copied into.
+        pub dst: Handle,
+        /// Number of bytes copied.
+        pub size: u64,
+    }
+
+    impl CmdCopyBufferRequest {
+        /// Append the encoded body to `out`: a raw `u64` command buffer handle,
+        /// a raw `u64` source handle, a raw `u64` destination handle, then the
+        /// `u64` copy size.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.command_buffer.raw().to_le_bytes());
+            out.extend_from_slice(&self.src.raw().to_le_bytes());
+            out.extend_from_slice(&self.dst.raw().to_le_bytes());
+            out.extend_from_slice(&self.size.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                command_buffer: Handle::from_raw(r.u64()?),
+                src: Handle::from_raw(r.u64()?),
+                dst: Handle::from_raw(r.u64()?),
+                size: r.u64()?,
+            })
+        }
+    }
+
+    /// Request body for [`vk_op::CMD_DRAW`](super::vk_op::CMD_DRAW).
+    ///
+    /// This records into a command buffer; the reply is an empty (ack) body, so
+    /// there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CmdDrawRequest {
+        /// Handle naming the command buffer the draw is recorded into.
+        pub command_buffer: Handle,
+        /// Number of vertices to draw.
+        pub vertex_count: u32,
+        /// Number of instances to draw.
+        pub instance_count: u32,
+    }
+
+    impl CmdDrawRequest {
+        /// Append the encoded body to `out`: a raw `u64` command buffer handle
+        /// followed by the `u32` vertex count and `u32` instance count.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.command_buffer.raw().to_le_bytes());
+            out.extend_from_slice(&self.vertex_count.to_le_bytes());
+            out.extend_from_slice(&self.instance_count.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                command_buffer: Handle::from_raw(r.u64()?),
+                vertex_count: r.u32()?,
+                instance_count: r.u32()?,
             })
         }
     }
@@ -2726,6 +2804,55 @@ mod tests {
         );
         assert_eq!(
             vk::QueueSubmitRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn vk_opcodes_draw_copy_in_vulkan_namespace() {
+        assert_eq!(opcode_api(vk_op::CMD_COPY_BUFFER), ApiId::Vulkan as u8);
+        assert_eq!(opcode_api(vk_op::CMD_DRAW), ApiId::Vulkan as u8);
+        assert_eq!(opcode_call(vk_op::CMD_COPY_BUFFER), 0x0023);
+        assert_eq!(opcode_call(vk_op::CMD_DRAW), 0x0024);
+        assert_ne!(vk_op::CMD_COPY_BUFFER, vk_op::CMD_DRAW);
+        assert_ne!(vk_op::QUEUE_SUBMIT, vk_op::CMD_COPY_BUFFER);
+    }
+
+    #[test]
+    fn vk_cmd_copy_buffer_roundtrip() {
+        let req = vk::CmdCopyBufferRequest {
+            command_buffer: Handle::new(8, 1, 2),
+            src: Handle::new(6, 3, 4),
+            dst: Handle::new(6, 5, 6),
+            size: u64::MAX,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 32);
+        assert_eq!(vk::CmdCopyBufferRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn vk_cmd_draw_roundtrip() {
+        let req = vk::CmdDrawRequest {
+            command_buffer: Handle::new(8, 7, 9),
+            vertex_count: u32::MAX,
+            instance_count: 1,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(vk::CmdDrawRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn vk_draw_copy_bodies_reject_short_buffers() {
+        assert_eq!(
+            vk::CmdCopyBufferRequest::decode(&[0u8; 31]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            vk::CmdDrawRequest::decode(&[0u8; 15]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
