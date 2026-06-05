@@ -10,7 +10,8 @@
 //! (`--check`), so an accidental opcode renumbering surfaces as a failed check.
 //! `check-xrefs` lints the Markdown under `docs/` for broken relative links and
 //! out-of-range chapter references, exiting non-zero when it finds problems so
-//! CI can gate on it.
+//! CI can gate on it. `verify` runs `check-xrefs` and `opcodes-lock --check`
+//! together and exits zero only when both pass, so CI can gate on one command.
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 mod opcodes;
@@ -57,6 +58,11 @@ fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         "opcodes-lock" => opcodes_lock(&args[1..], Path::new(OPCODES_LOCK)),
+        "verify" => verify(
+            Path::new(DOCS_DIR),
+            Path::new(OPCODES_LOCK),
+            &mut std::io::stdout(),
+        ),
         "check-xrefs" => {
             let issues = xrefs::check_xrefs(Path::new(DOCS_DIR), &mut std::io::stdout());
             // Exit non-zero on any issue so the check can gate CI; a clean run
@@ -136,28 +142,102 @@ fn opcodes_lock(args: &[String], lock_path: &Path) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        LockMode::Check => match std::fs::read_to_string(lock_path) {
-            Ok(existing) if existing == rendered => {
+        // `--check` delegates the read-and-compare to `opcodes::check_lock` so the
+        // same logic backs both this CLI arm and the `verify` aggregator; the
+        // reporting (and exit code) stays here, unchanged.
+        LockMode::Check => match opcodes::check_lock(lock_path, opcodes::OPCODES) {
+            opcodes::LockStatus::UpToDate => {
                 println!("opcodes-lock: {} is up to date", lock_path.display());
                 ExitCode::SUCCESS
             }
-            Ok(existing) => {
+            opcodes::LockStatus::Stale { on_disk, expected } => {
                 eprintln!(
                     "opcodes-lock: {} is out of date — run `cargo xtask opcodes-lock --write`",
                     lock_path.display()
                 );
-                report_first_difference(&mut std::io::stderr(), &existing, &rendered);
+                report_first_difference(&mut std::io::stderr(), &on_disk, &expected);
                 ExitCode::FAILURE
             }
-            Err(e) => {
+            opcodes::LockStatus::Unreadable { error } => {
                 eprintln!(
-                    "opcodes-lock: cannot read {}: {e} — run `cargo xtask opcodes-lock --write`",
+                    "opcodes-lock: cannot read {}: {error} — run `cargo xtask opcodes-lock --write`",
                     lock_path.display()
                 );
                 ExitCode::FAILURE
             }
         },
     }
+}
+
+/// Aggregate result of the two checks `verify` runs.
+///
+/// Keeping the pass/fail decision in a small pure type — separate from the
+/// filesystem and printing — means the "Ok only when both pass" rule can be unit
+/// tested without touching disk. `xref_issues` is the count from
+/// [`xrefs::check_xrefs`]; `lock_up_to_date` is whether the opcode lock matched.
+struct VerifyOutcome {
+    /// Number of cross-reference issues found under `docs/` (0 means clean).
+    xref_issues: usize,
+    /// Whether `opcodes-lock --check` would pass.
+    lock_up_to_date: bool,
+}
+
+impl VerifyOutcome {
+    /// Whether both sub-checks passed: no xref issues *and* an up-to-date lock.
+    fn passed(&self) -> bool {
+        self.xref_issues == 0 && self.lock_up_to_date
+    }
+
+    /// Map the outcome to a process exit code: success only when both pass.
+    fn exit_code(&self) -> ExitCode {
+        if self.passed() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Run the aggregate `verify` check: the xref lint over `docs_dir` *and* the
+/// opcode-lock verification against `lock_path`.
+///
+/// Both sub-checks always run (no short-circuit) so a single invocation surfaces
+/// every problem at once. Each reuses the existing logic — [`xrefs::check_xrefs`]
+/// and [`opcodes::check_lock`] — rather than reimplementing it. A short
+/// per-check summary is written to `out`, and the return value is
+/// [`ExitCode::SUCCESS`] only when both pass, else [`ExitCode::FAILURE`].
+fn verify<W: std::io::Write>(docs_dir: &Path, lock_path: &Path, out: &mut W) -> ExitCode {
+    // `check_xrefs` prints its own per-file report to `out`; let it, then add the
+    // aggregate one-liner below so the summary lines read consistently.
+    let xref_issues = xrefs::check_xrefs(docs_dir, out);
+    let lock_up_to_date = opcodes::check_lock(lock_path, opcodes::OPCODES).is_up_to_date();
+
+    let outcome = VerifyOutcome {
+        xref_issues,
+        lock_up_to_date,
+    };
+
+    let _ = writeln!(out, "verify: xrefs: {} issue(s)", outcome.xref_issues);
+    let _ = writeln!(
+        out,
+        "verify: opcodes-lock: {}",
+        if outcome.lock_up_to_date {
+            "up-to-date"
+        } else {
+            "STALE"
+        }
+    );
+    let _ = writeln!(
+        out,
+        "verify: {}",
+        if outcome.passed() {
+            "OK (all checks passed)"
+        } else {
+            "FAILED"
+        }
+    );
+
+    outcome.exit_code()
 }
 
 /// Write a short, diff-ish note about the first line where `have` and `want`
@@ -208,6 +288,7 @@ Subcommands:
     coverage       Summarize opcode coverage per API as a Markdown roll-up
     opcodes-lock   Freeze (--write) or verify (--check, default) the opcode lock
     check-xrefs    Validate cross-references between the docs and the protocol
+    verify         Run check-xrefs and opcodes-lock --check together (CI gate)
     help           Show this message"
     );
 }
@@ -356,5 +437,79 @@ mod tests {
         report_first_difference(&mut out, "a\nb\n", "a\nb\nc\n");
         let text = String::from_utf8(out).expect("utf8 report");
         assert!(text.contains("line count differs"), "report was: {text}");
+    }
+
+    #[test]
+    fn verify_outcome_passes_only_when_both_pass() {
+        // The whole point of the aggregate: Ok only when both sub-results are Ok.
+        let both_ok = VerifyOutcome {
+            xref_issues: 0,
+            lock_up_to_date: true,
+        };
+        assert!(both_ok.passed());
+        assert_eq!(both_ok.exit_code(), ExitCode::SUCCESS);
+
+        let xref_fail = VerifyOutcome {
+            xref_issues: 3,
+            lock_up_to_date: true,
+        };
+        assert!(!xref_fail.passed());
+        assert_eq!(xref_fail.exit_code(), ExitCode::FAILURE);
+
+        let lock_fail = VerifyOutcome {
+            xref_issues: 0,
+            lock_up_to_date: false,
+        };
+        assert!(!lock_fail.passed());
+        assert_eq!(lock_fail.exit_code(), ExitCode::FAILURE);
+
+        let both_fail = VerifyOutcome {
+            xref_issues: 2,
+            lock_up_to_date: false,
+        };
+        assert!(!both_fail.passed());
+        assert_eq!(both_fail.exit_code(), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn verify_is_a_known_subcommand() {
+        // Dispatched (not the usage error); pass/fail depends on the checkout.
+        assert_ne!(run(&argv(&["verify"])), ExitCode::from(EXIT_USAGE));
+    }
+
+    #[test]
+    fn verify_fails_when_lock_is_missing() {
+        // A missing lockfile means opcodes-lock cannot pass, so verify must fail
+        // even when the xref scan over a (nonexistent) docs dir is clean.
+        let mut out = Vec::new();
+        let code = verify(
+            Path::new("definitely/not/a/real/docs/dir"),
+            Path::new("definitely/not/a/real/opcodes.lock"),
+            &mut out,
+        );
+        assert_eq!(code, ExitCode::FAILURE);
+        let text = String::from_utf8(out).expect("utf8 report");
+        assert!(text.contains("opcodes-lock: STALE"), "report was: {text}");
+        assert!(text.contains("verify: FAILED"), "report was: {text}");
+    }
+
+    #[test]
+    fn verify_summary_lists_both_checks() {
+        // Drive verify with a clean docs dir and a freshly written lock so both
+        // sub-checks pass; assert the summary names both and reports success.
+        let lock = temp_lock_path("verify-ok");
+        std::fs::write(&lock, opcodes::render_lock(opcodes::OPCODES))
+            .expect("seed canonical lockfile");
+        let mut out = Vec::new();
+        let code = verify(Path::new("definitely/not/a/real/docs/dir"), &lock, &mut out);
+        assert_eq!(code, ExitCode::SUCCESS);
+        let text = String::from_utf8(out).expect("utf8 report");
+        assert!(text.contains("verify: xrefs: 0 issue(s)"), "report: {text}");
+        assert!(
+            text.contains("verify: opcodes-lock: up-to-date"),
+            "report: {text}"
+        );
+        assert!(text.contains("verify: OK"), "report: {text}");
+        let _ = std::fs::remove_file(&lock);
     }
 }

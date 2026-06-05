@@ -9,6 +9,8 @@
 //! a 24-bit call id. The full opcode is `(api_id << 24) | call_id`, matching the
 //! `opcode()` helper in `graftx-protocol`.
 
+use std::path::Path;
+
 /// A single opcode, with enough context to render one table row.
 pub struct OpcodeEntry {
     /// Display name of the owning API (the `API` column).
@@ -262,6 +264,46 @@ pub fn render_lock(entries: &[OpcodeEntry]) -> String {
     out
 }
 
+/// Outcome of verifying the opcode lockfile against the canonical render.
+///
+/// This separates *deciding* whether the lock is current from *reporting* it, so
+/// both the `opcodes-lock --check` CLI arm and the `verify` aggregator can reuse
+/// the same comparison without duplicating the read-and-compare logic.
+pub enum LockStatus {
+    /// The file on disk matches the canonical render byte-for-byte.
+    UpToDate,
+    /// The file exists but differs; carries the on-disk and expected text so the
+    /// caller can render a diff hint.
+    Stale { on_disk: String, expected: String },
+    /// The file could not be read (missing or otherwise inaccessible); carries
+    /// the I/O error message for the caller to surface.
+    Unreadable { error: String },
+}
+
+impl LockStatus {
+    /// Whether the lock is current. `verify` and the CLI both gate on this.
+    pub fn is_up_to_date(&self) -> bool {
+        matches!(self, LockStatus::UpToDate)
+    }
+}
+
+/// Verify the lockfile at `lock_path` against the canonical render of `entries`.
+///
+/// Reads the file and compares it to [`render_lock`], returning a [`LockStatus`]
+/// that the caller turns into output and an exit code. This does no printing of
+/// its own, which is what lets the `opcodes-lock --check` arm and the `verify`
+/// aggregator share one source of truth for the comparison.
+pub fn check_lock(lock_path: &Path, entries: &[OpcodeEntry]) -> LockStatus {
+    let expected = render_lock(entries);
+    match std::fs::read_to_string(lock_path) {
+        Ok(on_disk) if on_disk == expected => LockStatus::UpToDate,
+        Ok(on_disk) => LockStatus::Stale { on_disk, expected },
+        Err(e) => LockStatus::Unreadable {
+            error: e.to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,5 +546,51 @@ mod tests {
         let lock = render_lock(OPCODES);
         let body_lines = lock.lines().filter(|l| !l.starts_with('#')).count();
         assert_eq!(body_lines, OPCODES.len());
+    }
+
+    /// A unique temp path for a lockfile fixture so parallel tests do not collide
+    /// and nothing is left behind in the repo.
+    fn temp_lock_path(tag: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        path.push(format!("graftx-xtask-checklock-{tag}-{nanos}.lock"));
+        path
+    }
+
+    #[test]
+    fn check_lock_reports_up_to_date_for_canonical_file() {
+        let path = temp_lock_path("uptodate");
+        std::fs::write(&path, render_lock(OPCODES)).expect("seed canonical lockfile");
+        let status = check_lock(&path, OPCODES);
+        assert!(status.is_up_to_date());
+        assert!(matches!(status, LockStatus::UpToDate));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn check_lock_reports_stale_on_difference() {
+        let path = temp_lock_path("stale");
+        std::fs::write(&path, "# stale\n0xFF_FFFFFF Bogus OPCODE\n").expect("seed stale lockfile");
+        let status = check_lock(&path, OPCODES);
+        assert!(!status.is_up_to_date());
+        match status {
+            LockStatus::Stale { expected, .. } => {
+                assert_eq!(expected, render_lock(OPCODES));
+            }
+            other => panic!("expected Stale, got {}", other.is_up_to_date()),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn check_lock_reports_unreadable_when_missing() {
+        let path = temp_lock_path("missing");
+        let _ = std::fs::remove_file(&path);
+        let status = check_lock(&path, OPCODES);
+        assert!(!status.is_up_to_date());
+        assert!(matches!(status, LockStatus::Unreadable { .. }));
     }
 }
