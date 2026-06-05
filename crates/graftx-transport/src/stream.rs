@@ -24,12 +24,24 @@ pub const MAX_FRAME: u32 = 64 * 1024 * 1024;
 /// `StreamTransport`s over the two ends of a connected stream interoperate.
 pub struct StreamTransport<S> {
     inner: S,
+    max_frame: u32,
 }
 
 impl<S> StreamTransport<S> {
-    /// Wrap a stream in a length-prefixed transport.
+    /// Wrap a stream in a length-prefixed transport, capping incoming frames
+    /// at [`MAX_FRAME`].
     pub fn new(inner: S) -> Self {
-        Self { inner }
+        Self::with_max_frame(inner, MAX_FRAME)
+    }
+
+    /// Wrap a stream with a custom upper bound on incoming frame lengths.
+    ///
+    /// [`recv`](Transport::recv) rejects a declared length above `max_frame`
+    /// with [`io::ErrorKind::InvalidData`] before allocating, letting a caller
+    /// tighten the per-connection memory a peer can force us to reserve below
+    /// the [`MAX_FRAME`] default.
+    pub fn with_max_frame(inner: S, max_frame: u32) -> Self {
+        Self { inner, max_frame }
     }
 
     /// Consume the transport and return the wrapped stream.
@@ -63,10 +75,10 @@ impl<S: Read + Write> Transport for StreamTransport<S> {
             return Err(err);
         }
         let len = u32::from_le_bytes(header);
-        if len > MAX_FRAME {
+        if len > self.max_frame {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "declared frame length exceeds MAX_FRAME",
+                "declared frame length exceeds max_frame",
             ));
         }
         let mut frame = vec![0u8; len as usize];
@@ -127,6 +139,54 @@ mod tests {
         let mut reader = StreamTransport::new(Cursor::new(Vec::new()));
         let err = reader.recv().expect_err("empty stream must error");
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn default_new_uses_max_frame() {
+        // A length exactly at MAX_FRAME is accepted (then errors on the missing
+        // body); MAX_FRAME + 1 is rejected as InvalidData. Together these pin
+        // the default cap to MAX_FRAME without allocating the huge body.
+        let at_limit = MAX_FRAME.to_le_bytes().to_vec();
+        let mut reader = StreamTransport::new(Cursor::new(at_limit));
+        assert_eq!(
+            reader.recv().expect_err("missing body must error").kind(),
+            io::ErrorKind::UnexpectedEof,
+        );
+
+        let over_limit = (MAX_FRAME + 1).to_le_bytes().to_vec();
+        let mut reader = StreamTransport::new(Cursor::new(over_limit));
+        assert_eq!(
+            reader.recv().expect_err("over limit must error").kind(),
+            io::ErrorKind::InvalidData,
+        );
+    }
+
+    #[test]
+    fn with_max_frame_rejects_larger_declared_length() {
+        // Declared length 9 exceeds the instance cap of 8 and must be rejected
+        // before the body is read.
+        let mut bytes = 9u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(b"unused body");
+
+        let mut reader = StreamTransport::with_max_frame(Cursor::new(bytes), 8);
+        let err = reader
+            .recv()
+            .expect_err("length above instance cap must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn with_max_frame_round_trips_within_limit() {
+        let frame: &[u8] = b"within";
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = StreamTransport::with_max_frame(Cursor::new(&mut buf), 8);
+            writer.send(frame).expect("send frame within limit");
+        }
+
+        let mut reader = StreamTransport::with_max_frame(Cursor::new(buf), 8);
+        assert_eq!(reader.recv().expect("recv frame within limit"), frame);
     }
 
     #[test]
