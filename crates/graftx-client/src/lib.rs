@@ -18,6 +18,7 @@ pub mod cl;
 pub mod cuda;
 pub mod gl;
 pub mod hip;
+pub mod l0;
 pub mod vk;
 
 /// Errors surfaced by the client session layer.

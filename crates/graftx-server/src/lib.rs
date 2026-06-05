@@ -11,6 +11,7 @@ pub mod cl_backend;
 pub mod cuda_backend;
 pub mod gl_backend;
 pub mod hip_backend;
+pub mod l0_backend;
 pub mod serve;
 pub mod session;
 
@@ -19,5 +20,6 @@ pub use cl_backend::ClBackend;
 pub use cuda_backend::CudaBackend;
 pub use gl_backend::GlBackend;
 pub use hip_backend::HipBackend;
+pub use l0_backend::L0Backend;
 pub use serve::{serve, serve_tcp};
 pub use session::Session;
