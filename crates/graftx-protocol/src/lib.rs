@@ -306,6 +306,75 @@ pub fn decode_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8]), ProtocolError> {
     Ok((header, &buf[HEADER_LEN..]))
 }
 
+/// A 64-bit wire handle that names a server-side resource (decision D5).
+///
+/// Layout (most-significant bit first):
+///
+/// ```text
+///  bits 56..64  bits 32..56   bits 0..32
+/// ┌───────────┬─────────────┬──────────────┐
+/// │ kind (8)  │ gen (24)    │ slot idx (32)│
+/// └───────────┴─────────────┴──────────────┘
+/// ```
+///
+/// The `generation` field guards against use-after-free of a reused slot: each
+/// time a slot is reallocated its generation is bumped, so a stale handle
+/// carrying the old generation no longer matches. When a slot's generation
+/// would exceed [`Handle::GENERATION_MAX`] the slot is *retired* and never
+/// reused, so the generation never wraps back to a value an old handle holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Handle(u64);
+
+impl Handle {
+    /// Number of bits in the `kind` field (the top byte).
+    pub const KIND_BITS: u32 = 8;
+    /// Number of bits in the `generation` field.
+    pub const GENERATION_BITS: u32 = 24;
+    /// Number of bits in the `slot` index field (the low word).
+    pub const SLOT_BITS: u32 = 32;
+
+    /// Largest representable generation value (`2^24 - 1`). A slot whose
+    /// generation would exceed this is retired rather than reused.
+    pub const GENERATION_MAX: u32 = (1 << Self::GENERATION_BITS) - 1;
+
+    /// Pack a `kind`, `generation`, and `slot` index into a wire handle.
+    ///
+    /// `generation` is masked to [`Handle::GENERATION_BITS`] bits; any high bits
+    /// are discarded so the packed value always round-trips through
+    /// [`Handle::generation`].
+    pub const fn new(kind: u8, generation: u32, slot: u32) -> Handle {
+        let kind = (kind as u64) << (Self::GENERATION_BITS + Self::SLOT_BITS);
+        let generation = ((generation & Self::GENERATION_MAX) as u64) << Self::SLOT_BITS;
+        let slot = slot as u64;
+        Handle(kind | generation | slot)
+    }
+
+    /// The `kind` byte (the top 8 bits).
+    pub const fn kind(self) -> u8 {
+        (self.0 >> (Self::GENERATION_BITS + Self::SLOT_BITS)) as u8
+    }
+
+    /// The 24-bit `generation` counter.
+    pub const fn generation(self) -> u32 {
+        ((self.0 >> Self::SLOT_BITS) as u32) & Self::GENERATION_MAX
+    }
+
+    /// The 32-bit `slot` index (the low word).
+    pub const fn slot(self) -> u32 {
+        self.0 as u32
+    }
+
+    /// The raw 64-bit wire value.
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// Wrap a raw 64-bit wire value.
+    pub const fn from_raw(raw: u64) -> Handle {
+        Handle(raw)
+    }
+}
+
 /// A bounds-checked little-endian reader over a byte slice.
 struct Reader<'a> {
     buf: &'a [u8],
@@ -412,6 +481,53 @@ mod tests {
     #[test]
     fn decode_frame_rejects_short_buffer() {
         assert_eq!(decode_frame(&[0u8; 4]), Err(ProtocolError::UnexpectedEof));
+    }
+
+    #[test]
+    fn handle_roundtrip() {
+        let cases = [
+            (0u8, 0u32, 0u32),
+            (1, 1, 1),
+            (0x7F, 0x00AB_CDEF & Handle::GENERATION_MAX, 0x1234_5678),
+            (0xFF, Handle::GENERATION_MAX, u32::MAX),
+            (0xFF, 0, 0),
+            (0, Handle::GENERATION_MAX, 0),
+            (0, 0, u32::MAX),
+        ];
+        for (kind, generation, slot) in cases {
+            let h = Handle::new(kind, generation, slot);
+            assert_eq!(h.kind(), kind, "kind for {h:?}");
+            assert_eq!(h.generation(), generation, "generation for {h:?}");
+            assert_eq!(h.slot(), slot, "slot for {h:?}");
+            assert_eq!(Handle::from_raw(h.raw()), h, "raw roundtrip for {h:?}");
+        }
+    }
+
+    #[test]
+    fn handle_generation_masked_to_24_bits() {
+        // Generation bits above bit 24 must be discarded, not bleed into kind.
+        let h = Handle::new(0xAB, 0xFFFF_FFFF, 0x9999_9999);
+        assert_eq!(h.generation(), Handle::GENERATION_MAX);
+        assert_eq!(h.kind(), 0xAB);
+        assert_eq!(h.slot(), 0x9999_9999);
+
+        // A generation one past the max wraps to 0 after masking.
+        let h = Handle::new(0x12, Handle::GENERATION_MAX + 1, 0x0000_0001);
+        assert_eq!(h.generation(), 0);
+        assert_eq!(h.kind(), 0x12);
+        assert_eq!(h.slot(), 1);
+    }
+
+    #[test]
+    fn handle_field_constants() {
+        assert_eq!(Handle::KIND_BITS, 8);
+        assert_eq!(Handle::GENERATION_BITS, 24);
+        assert_eq!(Handle::SLOT_BITS, 32);
+        assert_eq!(
+            Handle::KIND_BITS + Handle::GENERATION_BITS + Handle::SLOT_BITS,
+            64
+        );
+        assert_eq!(Handle::GENERATION_MAX, (1 << 24) - 1);
     }
 
     #[test]

@@ -12,6 +12,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftx-handles"
+version = "0.0.0"
+dependencies = [
+ "graftx-protocol",
+ "thiserror",
+]
+
+[[package]]
 name = "graftx-protocol"
 version = "0.0.0"
 dependencies = [

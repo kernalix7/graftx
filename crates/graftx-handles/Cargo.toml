@@ -1,0 +1,13 @@
+[package]
+name = "graftx-handles"
+description = "Generational handle table mapping wire Handles to server-side resources."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+graftx-protocol = { path = "../graftx-protocol" }
+thiserror.workspace = true

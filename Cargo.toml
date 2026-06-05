@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/graftx-protocol",
+    "crates/graftx-handles",
     "crates/graftx-transport",
     "crates/graftx-client",
     "crates/graftx-server",
@@ -18,5 +19,6 @@ repository = "https://github.com/kernalix7/graftx"
 
 [workspace.dependencies]
 graftx-protocol = { path = "crates/graftx-protocol" }
+graftx-handles = { path = "crates/graftx-handles" }
 graftx-transport = { path = "crates/graftx-transport" }
 thiserror = "2"
