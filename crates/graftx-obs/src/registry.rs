@@ -14,8 +14,9 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Duration;
 
-use crate::CallStats;
+use crate::{CallStats, LatencyHist};
 
 /// Backing storage for the process-global [`ObsRegistry`].
 ///
@@ -47,9 +48,16 @@ pub fn record(api: &'static str, bytes_out: u64, bytes_in: u64) {
 ///
 /// Records are merged in place, so the registry only ever grows one entry per
 /// distinct `&'static str` API name regardless of call volume.
+///
+/// Latencies are tracked separately in their own [`LatencyHist`] map so that
+/// the call/byte counters and the latency histograms stay independent: a call
+/// can be counted via [`record`](Self::record) without an observed duration,
+/// and a duration can be folded in via [`record_latency`](Self::record_latency)
+/// without touching the byte counters.
 #[derive(Debug, Default)]
 pub struct ObsRegistry {
     inner: Mutex<HashMap<&'static str, CallStats>>,
+    latency: Mutex<HashMap<&'static str, LatencyHist>>,
 }
 
 impl ObsRegistry {
@@ -64,6 +72,15 @@ impl ObsRegistry {
     /// than turned into a panic.
     fn lock(&self) -> MutexGuard<'_, HashMap<&'static str, CallStats>> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Lock the per-API latency map, recovering the guard if it is poisoned.
+    ///
+    /// Mirrors [`lock`](Self::lock) for the separate latency histogram map; see
+    /// the [module docs](self) for why a poisoned lock is tolerated rather than
+    /// turned into a panic.
+    fn lock_latency(&self) -> MutexGuard<'_, HashMap<&'static str, LatencyHist>> {
+        self.latency.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Record a single call against `api`, creating its entry if needed.
@@ -149,6 +166,40 @@ impl ObsRegistry {
             "| TOTAL | {} | {} | {} |",
             total.calls, total.bytes_out, total.bytes_in
         );
+        out
+    }
+
+    /// Record a single observed latency for `api`, creating its entry if needed.
+    ///
+    /// The duration is folded into a per-API [`LatencyHist`], whose bucket
+    /// counts saturate at [`u64::MAX`] via [`LatencyHist::record`]. This is
+    /// independent of [`record`](Self::record): tracking a latency does not
+    /// touch the call/byte counters.
+    pub fn record_latency(&self, api: &'static str, d: Duration) {
+        self.lock_latency().entry(api).or_default().record(d);
+    }
+
+    /// Render the per-API latency histograms as Markdown.
+    ///
+    /// Each API is shown as a `### <api>` heading followed by its
+    /// [`LatencyHist::report`] table; APIs are listed in ascending name order
+    /// for deterministic output. When no latencies have been recorded the
+    /// result is the empty string.
+    pub fn latency_report(&self) -> String {
+        let guard = self.lock_latency();
+        let mut rows: Vec<(&'static str, LatencyHist)> =
+            guard.iter().map(|(api, hist)| (*api, *hist)).collect();
+        // Drop the guard before sorting and formatting so the lock is held only
+        // as long as the snapshot of histograms takes to copy out.
+        drop(guard);
+        rows.sort_by_key(|(api, _)| *api);
+
+        let mut out = String::new();
+        for (api, hist) in &rows {
+            // Writing into a `String` is infallible, so the result is ignored.
+            let _ = writeln!(out, "### {api}");
+            out.push_str(&hist.report());
+        }
         out
     }
 }
@@ -443,6 +494,124 @@ mod tests {
                 bytes_out: 15,
                 bytes_in: 27,
             }
+        );
+    }
+
+    #[test]
+    fn record_latency_tracks_per_api_histograms() {
+        let registry = ObsRegistry::new();
+        // NtCreateFile: two observations, both in the < 4us bucket.
+        registry.record_latency("NtCreateFile", Duration::from_micros(3));
+        registry.record_latency("NtCreateFile", Duration::from_micros(3));
+        // NtClose: one observation in the overflow (>= 1024us) bucket.
+        registry.record_latency("NtClose", Duration::from_secs(1));
+
+        let report = registry.latency_report();
+        assert!(
+            report.contains("### NtCreateFile"),
+            "latency report is missing the NtCreateFile heading:\n{report}"
+        );
+        assert!(
+            report.contains("### NtClose"),
+            "latency report is missing the NtClose heading:\n{report}"
+        );
+        assert!(
+            report.contains("| <4us | 2 |"),
+            "latency report is missing the NtCreateFile bucket row:\n{report}"
+        );
+        assert!(
+            report.contains("| >=1024us | 1 |"),
+            "latency report is missing the NtClose overflow row:\n{report}"
+        );
+
+        // APIs are listed in ascending name order.
+        let ntclose = report.find("### NtClose").expect("NtClose heading present");
+        let ntcreate = report
+            .find("### NtCreateFile")
+            .expect("NtCreateFile heading present");
+        assert!(
+            ntclose < ntcreate,
+            "latency report APIs are not sorted by name:\n{report}"
+        );
+    }
+
+    #[test]
+    fn latency_report_of_empty_registry_is_empty() {
+        let registry = ObsRegistry::new();
+        assert!(registry.latency_report().is_empty());
+    }
+
+    #[test]
+    fn record_latency_is_independent_of_record() {
+        let registry = ObsRegistry::new();
+        registry.record_latency("NtReadFile", Duration::from_micros(0));
+
+        // Recording a latency must not create a CallStats entry.
+        assert!(
+            registry.snapshot().is_empty(),
+            "record_latency should not touch the call/byte counters"
+        );
+        assert_eq!(registry.total(), CallStats::default());
+
+        // Recording a call must not create a latency entry.
+        let other = ObsRegistry::new();
+        other.record("NtWriteFile", 1, 2);
+        assert!(
+            other.latency_report().is_empty(),
+            "record should not touch the latency histograms"
+        );
+    }
+
+    #[test]
+    fn record_latency_recovers_from_poisoned_lock() {
+        let registry = Arc::new(ObsRegistry::new());
+        registry.record_latency("NtCreateFile", Duration::from_micros(3));
+
+        // Poison the latency lock by panicking while holding its guard.
+        let poisoner = Arc::clone(&registry);
+        let result = thread::spawn(move || {
+            let _guard = poisoner.latency.lock().expect("lock not yet poisoned");
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(result.is_err(), "poisoning thread should have panicked");
+
+        // The registry stays usable despite the poisoned latency lock.
+        registry.record_latency("NtCreateFile", Duration::from_micros(3));
+        let report = registry.latency_report();
+        assert!(
+            report.contains("| <4us | 2 |"),
+            "latency report should reflect both observations:\n{report}"
+        );
+    }
+
+    #[test]
+    fn concurrent_record_latency_aggregates_exactly() {
+        const THREADS: u64 = 8;
+        const CALLS_PER_THREAD: u64 = 1_000;
+
+        let registry = Arc::new(ObsRegistry::new());
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let registry = Arc::clone(&registry);
+                thread::spawn(move || {
+                    for _ in 0..CALLS_PER_THREAD {
+                        // 3us falls in the < 4us bucket.
+                        registry.record_latency("NtCreateFile", Duration::from_micros(3));
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("worker thread panicked");
+        }
+
+        let expected = THREADS * CALLS_PER_THREAD;
+        let report = registry.latency_report();
+        assert!(
+            report.contains(&format!("| <4us | {expected} |")),
+            "latency report should reflect all observations:\n{report}"
         );
     }
 
