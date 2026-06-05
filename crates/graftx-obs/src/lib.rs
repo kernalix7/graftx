@@ -16,9 +16,11 @@
 
 mod guard;
 mod registry;
+mod timer;
 
 pub use guard::{begin, CallGuard};
 pub use registry::ObsRegistry;
+pub use timer::{time_call, Timer};
 
 /// Accumulated statistics for a stream of GraftX calls.
 ///
