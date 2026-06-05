@@ -10,10 +10,14 @@
 //! intended behaviour rather than wrapping or aborting.
 //!
 //! For aggregating statistics across many APIs and threads, see the
-//! [`ObsRegistry`] in the [`registry`] module.
+//! [`ObsRegistry`] in the [`registry`] module. For tying a single call's
+//! span and statistics to a scope, see the [`CallGuard`] in the [`guard`]
+//! module.
 
+mod guard;
 mod registry;
 
+pub use guard::{begin, CallGuard};
 pub use registry::ObsRegistry;
 
 /// Accumulated statistics for a stream of GraftX calls.
