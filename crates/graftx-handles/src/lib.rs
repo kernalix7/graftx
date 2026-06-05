@@ -183,6 +183,30 @@ impl<T> HandleTable<T> {
             })
     }
 
+    /// Iterate over the live entries tagged with `kind` as `(handle, &value)`
+    /// pairs.
+    ///
+    /// Behaves exactly like [`iter`](Self::iter) but yields only those live
+    /// slots whose recorded `kind` matches the argument; empty, retired, and
+    /// other-kind slots are skipped. Each yielded [`Handle`] is reconstructed
+    /// from the live slot and resolves via [`get`](Self::get) for as long as the
+    /// slot is not freed, and its `kind()` equals the `kind` argument. Iteration
+    /// follows the underlying slot indices and is otherwise unspecified; the
+    /// iterator is empty for a kind with no live entries.
+    pub fn iter_kind(&self, kind: u8) -> impl Iterator<Item = (Handle, &T)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(move |(slot_idx, slot)| {
+                if slot.kind != kind {
+                    return None;
+                }
+                let value = slot.value.as_ref()?;
+                let handle = Handle::new(slot.kind, slot.generation, slot_idx as u32);
+                Some((handle, value))
+            })
+    }
+
     /// Count the live entries whose handle carries the given `kind` byte.
     ///
     /// Empty and retired slots are not counted.
@@ -498,6 +522,91 @@ mod tests {
         // A kind that was never inserted has no live entries.
         assert_eq!(table.count_by_kind(KIND_B), 0);
         assert_eq!(table.count_by_kind(KIND_A), 1);
+    }
+
+    #[test]
+    fn iter_kind_yields_only_matching_live_entries_with_roundtripping_handles() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        let b = table.insert(KIND_B, 2);
+        let c = table.insert(KIND_A, 3);
+
+        // KIND_A yields exactly its two live entries; every handle round-trips
+        // via get() and reports the queried kind.
+        let mut seen_a: Vec<(u64, u32)> = table
+            .iter_kind(KIND_A)
+            .map(|(h, &v)| {
+                assert_eq!(h.kind(), KIND_A);
+                assert_eq!(table.get(h), Some(&v));
+                (h.raw(), v)
+            })
+            .collect();
+        seen_a.sort_unstable();
+        let mut expected_a = vec![(a.raw(), 1), (c.raw(), 3)];
+        expected_a.sort_unstable();
+        assert_eq!(seen_a, expected_a);
+
+        // KIND_B yields just its single live entry.
+        let seen_b: Vec<(u64, u32)> = table
+            .iter_kind(KIND_B)
+            .map(|(h, &v)| (h.raw(), v))
+            .collect();
+        assert_eq!(seen_b, vec![(b.raw(), 2)]);
+    }
+
+    #[test]
+    fn iter_kind_is_empty_for_absent_kind_and_empty_table() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        // Nothing inserted yet: every kind is empty.
+        assert_eq!(table.iter_kind(KIND_A).count(), 0);
+
+        let _h = table.insert(KIND_A, 7);
+        // A kind that was never inserted yields no entries, while the present
+        // kind yields its entry.
+        assert_eq!(table.iter_kind(KIND_B).count(), 0);
+        assert_eq!(table.iter_kind(KIND_A).count(), 1);
+    }
+
+    #[test]
+    fn iter_kind_reflects_removal() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        let b = table.insert(KIND_B, 2);
+        let _c = table.insert(KIND_A, 3);
+
+        assert_eq!(table.iter_kind(KIND_A).count(), 2);
+        assert_eq!(table.iter_kind(KIND_B).count(), 1);
+
+        // Removing a KIND_A entry drops it from that kind's iterator and leaves
+        // KIND_B untouched.
+        assert_eq!(table.remove(a), Some(1));
+        assert_eq!(table.iter_kind(KIND_A).count(), 1);
+        assert!(table.iter_kind(KIND_A).all(|(h, _)| h != a));
+        assert_eq!(table.iter_kind(KIND_B).count(), 1);
+
+        // Removing the KIND_B entry empties that kind without touching KIND_A.
+        assert_eq!(table.remove(b), Some(2));
+        assert_eq!(table.iter_kind(KIND_B).count(), 0);
+        assert_eq!(table.iter_kind(KIND_A).count(), 1);
+    }
+
+    #[test]
+    fn iter_kind_reports_reused_slot_under_new_kind_only() {
+        // A freed slot reused under a different kind appears only in the new
+        // kind's iterator, never the stale one recorded by the prior occupant.
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        assert_eq!(table.remove(a), Some(1));
+
+        let b = table.insert(KIND_B, 2);
+        assert_eq!(b.slot(), a.slot());
+
+        assert_eq!(table.iter_kind(KIND_A).count(), 0);
+        let live_b: Vec<(u8, u32)> = table
+            .iter_kind(KIND_B)
+            .map(|(h, &v)| (h.kind(), v))
+            .collect();
+        assert_eq!(live_b, vec![(KIND_B, 2)]);
     }
 
     #[test]
