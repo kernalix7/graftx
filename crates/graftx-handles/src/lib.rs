@@ -353,6 +353,52 @@ impl<T> HandleTable<T> {
         }
         self.live = 0;
     }
+
+    /// Retain only the live entries for which `keep` returns `true`, freeing the
+    /// rest.
+    ///
+    /// # Semantics
+    ///
+    /// Each live slot is visited in slot-index order and `keep(handle, &value)`
+    /// is called with the entry's reconstructed [`Handle`] and a shared reference
+    /// to its value. When `keep` returns `false` the entry is freed exactly as
+    /// [`remove`](Self::remove) would free it: its value is dropped, the slot's
+    /// generation is bumped (or, if the generation is already exhausted, the slot
+    /// is retired), and a non-retired slot is returned to the free-list for
+    /// reuse. Bumping the generation makes every handle to a dropped entry stale,
+    /// so it resolves to `None` via [`get`](Self::get) thereafter. When `keep`
+    /// returns `true` the entry is left untouched and its handle stays valid.
+    ///
+    /// Empty and retired slots are skipped; `keep` is never called for them. The
+    /// underlying slot storage is retained, so [`capacity`](Self::capacity) is
+    /// unchanged; only [`len`](Self::len) shrinks by the number removed.
+    ///
+    /// Returns the number of entries removed.
+    pub fn retain<F: FnMut(Handle, &T) -> bool>(&mut self, mut keep: F) -> usize {
+        let mut removed = 0;
+        for (slot_idx, slot) in self.slots.iter_mut().enumerate() {
+            let Some(value) = slot.value.as_ref() else {
+                // Empty or retired: not a live entry, so skip it entirely.
+                continue;
+            };
+            let handle = Handle::new(slot.kind, slot.generation, slot_idx as u32);
+            if keep(handle, value) {
+                continue;
+            }
+            // Predicate rejected the entry: free it, mirroring `remove`'s
+            // generational bookkeeping.
+            slot.value = None;
+            removed += 1;
+            if slot.generation >= Handle::GENERATION_MAX {
+                slot.retired = true;
+            } else {
+                slot.generation += 1;
+                self.free.push(slot_idx as u32);
+            }
+        }
+        self.live -= removed;
+        removed
+    }
 }
 
 impl<T> Default for HandleTable<T> {
@@ -993,5 +1039,175 @@ mod tests {
         assert_eq!(table.len(), 0);
         let h2 = table.insert(KIND, 2);
         assert_eq!(table.get(h2), Some(&2));
+    }
+
+    #[test]
+    fn retain_keeps_subset_and_frees_the_rest() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND, 1);
+        let b = table.insert(KIND, 2);
+        let c = table.insert(KIND, 3);
+        let d = table.insert(KIND, 4);
+        assert_eq!(table.len(), 4);
+
+        // Keep only the even values (2 and 4); drop the odd ones (1 and 3).
+        let removed = table.retain(|_h, &v| v % 2 == 0);
+        assert_eq!(removed, 2);
+
+        // len() and iter() reflect exactly the kept subset.
+        assert_eq!(table.len(), 2);
+        let mut kept: Vec<u32> = table.iter().map(|(_h, &v)| v).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, vec![2, 4]);
+
+        // Removed handles read as stale (None); kept handles still resolve.
+        assert_eq!(table.get(a), None);
+        assert_eq!(table.get(c), None);
+        assert_eq!(table.get(b), Some(&2));
+        assert_eq!(table.get(d), Some(&4));
+
+        // Removing a handle the predicate already freed is a no-op.
+        assert_eq!(table.remove(a), None);
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn retain_keeping_all_is_a_noop() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND, 10);
+        let b = table.insert(KIND, 20);
+        let c = table.insert(KIND, 30);
+        let cap_before = table.capacity();
+
+        let removed = table.retain(|_h, _v| true);
+        assert_eq!(removed, 0);
+
+        // Nothing changed: every handle still resolves and counts are intact.
+        assert_eq!(table.len(), 3);
+        assert_eq!(table.capacity(), cap_before);
+        assert_eq!(table.get(a), Some(&10));
+        assert_eq!(table.get(b), Some(&20));
+        assert_eq!(table.get(c), Some(&30));
+        assert_eq!(table.iter().count(), 3);
+    }
+
+    #[test]
+    fn retain_keeping_none_empties_the_table() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        let b = table.insert(KIND_B, 2);
+        let c = table.insert(KIND_A, 3);
+        let cap_before = table.capacity();
+
+        let removed = table.retain(|_h, _v| false);
+        assert_eq!(removed, 3);
+
+        // The table is now empty, with no live kinds; capacity is retained.
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.iter().count(), 0);
+        assert!(table.kinds().is_empty());
+        assert_eq!(table.capacity(), cap_before);
+
+        // Every pre-retain handle reads as stale.
+        assert_eq!(table.get(a), None);
+        assert_eq!(table.get(b), None);
+        assert_eq!(table.get(c), None);
+
+        // Freed slots are reusable by later inserts.
+        let d = table.insert(KIND_A, 99);
+        assert_eq!(table.len(), 1);
+        assert_eq!(table.get(d), Some(&99));
+    }
+
+    #[test]
+    fn retain_on_empty_table_removes_nothing() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        // The predicate must never fire on an empty table.
+        let removed = table.retain(|_h, _v| unreachable!("no live entries to visit"));
+        assert_eq!(removed, 0);
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.capacity(), 0);
+    }
+
+    #[test]
+    fn retain_skips_empty_slots_and_receives_matching_handles() {
+        // After a remove leaves a hole, retain must visit only the live slots and
+        // hand the predicate handles that round-trip via get().
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        let b = table.insert(KIND_B, 2);
+        let c = table.insert(KIND_A, 3);
+
+        // Free the middle entry, leaving an empty slot between two live ones.
+        assert_eq!(table.remove(b), Some(2));
+
+        // Record every (handle, value) the predicate observes; keep everything.
+        let mut visited: Vec<(u64, u32)> = Vec::new();
+        let removed = table.retain(|h, &v| {
+            visited.push((h.raw(), v));
+            true
+        });
+        assert_eq!(removed, 0);
+
+        // Only the two live entries were visited, each with its real handle.
+        visited.sort_unstable();
+        let mut expected = vec![(a.raw(), 1), (c.raw(), 3)];
+        expected.sort_unstable();
+        assert_eq!(visited, expected);
+
+        // The removed handle stayed stale throughout and the live ones survive.
+        assert_eq!(table.get(b), None);
+        assert_eq!(table.get(a), Some(&1));
+        assert_eq!(table.get(c), Some(&3));
+    }
+
+    #[test]
+    fn retain_frees_slots_for_reuse_with_bumped_generation() {
+        // A slot freed by retain behaves like one freed by remove: it is reused
+        // under a bumped generation and the stale handle never resolves.
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND, 1);
+        let _keep = table.insert(KIND, 2);
+
+        let removed = table.retain(|_h, &v| v != 1);
+        assert_eq!(removed, 1);
+        assert_eq!(table.get(a), None);
+
+        // The next insert reuses slot `a` under a higher generation.
+        let fresh = table.insert(KIND, 3);
+        assert_eq!(fresh.slot(), a.slot());
+        assert_ne!(fresh.generation(), a.generation());
+        assert_eq!(table.get(a), None);
+        assert_eq!(table.get(fresh), Some(&3));
+    }
+
+    #[test]
+    fn retain_retires_slot_whose_generation_is_exhausted() {
+        // When retain frees a slot already at GENERATION_MAX, it must retire the
+        // slot rather than return it to the free-list, exactly as remove does.
+        let mut table: HandleTable<u32> = HandleTable::new();
+
+        // Drive slot 0 up to GENERATION_MAX via ordinary insert/remove cycles.
+        let mut last = table.insert(KIND, 0);
+        while last.generation() < Handle::GENERATION_MAX {
+            assert_eq!(table.remove(last), Some(0));
+            last = table.insert(KIND, 0);
+            assert_eq!(last.slot(), 0);
+        }
+        assert_eq!(last.generation(), Handle::GENERATION_MAX);
+        assert_eq!(table.retired(), 0);
+
+        // retain drops the exhausted-generation entry, which retires the slot.
+        let removed = table.retain(|_h, _v| false);
+        assert_eq!(removed, 1);
+        assert_eq!(table.retired(), 1);
+        assert!(table.is_empty());
+
+        // The next insert allocates a new slot rather than reusing the retired 0.
+        let next = table.insert(KIND, 7);
+        assert_eq!(next.slot(), 1);
+        assert_eq!(table.get(next), Some(&7));
+        assert_eq!(table.get(last), None);
     }
 }
