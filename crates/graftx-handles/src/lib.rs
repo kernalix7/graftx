@@ -43,6 +43,23 @@ pub enum HandleError {
     },
 }
 
+/// A point-in-time summary of a [`HandleTable`]'s occupancy.
+///
+/// Produced by [`HandleTable::stats`]. Each field mirrors the corresponding
+/// accessor on the table at the moment the snapshot is taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandleStats {
+    /// Number of live (occupied) entries; see [`HandleTable::len`].
+    pub live: usize,
+    /// Number of permanently retired slots; see [`HandleTable::retired`].
+    pub retired: usize,
+    /// Total number of allocated storage slots; see [`HandleTable::capacity`].
+    pub capacity: usize,
+    /// Sorted, de-duplicated `kind` bytes of the live entries; see
+    /// [`HandleTable::kinds`].
+    pub kinds: Vec<u8>,
+}
+
 /// A single storage slot in the table.
 struct Slot<T> {
     /// The generation currently associated with this slot. A handle resolves
@@ -286,6 +303,23 @@ impl<T> HandleTable<T> {
     #[must_use]
     pub fn retired(&self) -> usize {
         self.slots.iter().filter(|slot| slot.retired).count()
+    }
+
+    /// A snapshot of the table's current occupancy.
+    ///
+    /// Bundles the live count, retired-slot count, allocated-slot count, and the
+    /// sorted set of live kinds into a single [`HandleStats`] value. Each field
+    /// equals what its dedicated accessor — [`len`](Self::len),
+    /// [`retired`](Self::retired), [`capacity`](Self::capacity), and
+    /// [`kinds`](Self::kinds) — would return at the same instant.
+    #[must_use]
+    pub fn stats(&self) -> HandleStats {
+        HandleStats {
+            live: self.len(),
+            retired: self.retired(),
+            capacity: self.capacity(),
+            kinds: self.kinds(),
+        }
     }
 
     /// Drop every live value and reset the table to hold no live entries.
@@ -835,6 +869,113 @@ mod tests {
         assert_eq!(table.len(), 0);
         assert_eq!(table.capacity(), 0);
         assert!(table.is_empty());
+    }
+
+    #[test]
+    fn stats_matches_individual_getters_on_populated_table() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        let a = table.insert(KIND_A, 1);
+        let _b = table.insert(KIND_B, 2);
+        let _c = table.insert(KIND_A, 3);
+        // Free a slot so capacity outpaces the live count.
+        assert_eq!(table.remove(a), Some(1));
+
+        let stats = table.stats();
+        assert_eq!(stats.live, table.len());
+        assert_eq!(stats.retired, table.retired());
+        assert_eq!(stats.capacity, table.capacity());
+        assert_eq!(stats.kinds, table.kinds());
+
+        // Spot-check the concrete values for the constructed shape.
+        assert_eq!(
+            stats,
+            HandleStats {
+                live: 2,
+                retired: 0,
+                capacity: 3,
+                kinds: vec![KIND_A, KIND_B],
+            }
+        );
+    }
+
+    #[test]
+    fn stats_on_empty_table_is_all_zero_with_no_kinds() {
+        let table: HandleTable<u32> = HandleTable::new();
+        assert_eq!(
+            table.stats(),
+            HandleStats {
+                live: 0,
+                retired: 0,
+                capacity: 0,
+                kinds: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn stats_tracks_insert_and_remove() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+        assert_eq!(table.stats().live, 0);
+
+        let a = table.insert(KIND_A, 1);
+        let b = table.insert(KIND_B, 2);
+        assert_eq!(
+            table.stats(),
+            HandleStats {
+                live: 2,
+                retired: 0,
+                capacity: 2,
+                kinds: vec![KIND_A, KIND_B],
+            }
+        );
+
+        // Removing the sole KIND_A entry drops it from the live set and the
+        // kinds list, while capacity is retained for reuse.
+        assert_eq!(table.remove(a), Some(1));
+        assert_eq!(
+            table.stats(),
+            HandleStats {
+                live: 1,
+                retired: 0,
+                capacity: 2,
+                kinds: vec![KIND_B],
+            }
+        );
+
+        // Reusing the freed slot brings the live count back without growing
+        // capacity, and reintroduces KIND_A.
+        let _c = table.insert(KIND_A, 3);
+        assert_eq!(table.remove(b), Some(2));
+        assert_eq!(
+            table.stats(),
+            HandleStats {
+                live: 1,
+                retired: 0,
+                capacity: 2,
+                kinds: vec![KIND_A],
+            }
+        );
+    }
+
+    #[test]
+    fn stats_reports_retired_slots() {
+        let mut table: HandleTable<u32> = HandleTable::new();
+
+        // Drive a single slot to GENERATION_MAX, then retire it on the final
+        // removal; stats() must observe the retired slot.
+        let mut last = table.insert(KIND, 0);
+        while last.generation() < Handle::GENERATION_MAX {
+            assert_eq!(table.remove(last), Some(0));
+            last = table.insert(KIND, 0);
+        }
+        assert_eq!(table.stats().retired, 0);
+        assert_eq!(table.remove(last), Some(0));
+
+        let stats = table.stats();
+        assert_eq!(stats.retired, 1);
+        assert_eq!(stats.retired, table.retired());
+        assert_eq!(stats.live, 0);
+        assert!(stats.kinds.is_empty());
     }
 
     #[test]
