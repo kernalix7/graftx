@@ -14,6 +14,7 @@ use std::io;
 use graftx_protocol as proto;
 use graftx_transport::Transport;
 
+pub mod cuda;
 pub mod gl;
 pub mod vk;
 
