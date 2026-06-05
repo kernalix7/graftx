@@ -14,11 +14,14 @@ use std::io;
 use graftx_protocol as proto;
 use graftx_transport::Transport;
 
+pub mod amf;
 pub mod cl;
 pub mod cuda;
 pub mod gl;
 pub mod hip;
 pub mod l0;
+pub mod optix;
+pub mod sycl;
 pub mod video;
 pub mod vk;
 pub mod wgpu;
