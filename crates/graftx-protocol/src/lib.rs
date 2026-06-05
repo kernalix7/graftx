@@ -76,6 +76,12 @@ pub enum ApiId {
     Video = 0x07,
     /// WebGPU.
     WebGpu = 0x08,
+    /// NVIDIA OptiX ray tracing.
+    OptiX = 0x09,
+    /// SYCL.
+    Sycl = 0x0A,
+    /// AMD Advanced Media Framework (AMF) video encode.
+    Amf = 0x0B,
 }
 
 /// Build an opcode from its API namespace and 24-bit call id.
@@ -218,6 +224,42 @@ pub mod wgpu_op {
     pub const CREATE_BUFFER: u32 = opcode(ApiId::WebGpu, 0x0002);
     /// `destroy`: destroy a previously created buffer.
     pub const DESTROY_BUFFER: u32 = opcode(ApiId::WebGpu, 0x0003);
+}
+
+/// OptiX opcodes (under [`ApiId::OptiX`]).
+pub mod optix_op {
+    use super::{opcode, ApiId};
+
+    /// `optixDeviceContextCreate`: create an OptiX device context.
+    pub const CONTEXT_CREATE: u32 = opcode(ApiId::OptiX, 0x0001);
+    /// `optixPipelineCreate`: create a ray-tracing pipeline in a context.
+    pub const PIPELINE_CREATE: u32 = opcode(ApiId::OptiX, 0x0002);
+    /// Destroy a previously created OptiX context or pipeline handle.
+    pub const DESTROY: u32 = opcode(ApiId::OptiX, 0x0003);
+}
+
+/// SYCL opcodes (under [`ApiId::Sycl`]).
+pub mod sycl_op {
+    use super::{opcode, ApiId};
+
+    /// Create a SYCL queue.
+    pub const QUEUE_CREATE: u32 = opcode(ApiId::Sycl, 0x0001);
+    /// `sycl::malloc_device`: allocate a block of device memory on a queue.
+    pub const MALLOC_DEVICE: u32 = opcode(ApiId::Sycl, 0x0002);
+    /// `sycl::free`: free a previously allocated device pointer.
+    pub const FREE: u32 = opcode(ApiId::Sycl, 0x0003);
+}
+
+/// AMF opcodes (under [`ApiId::Amf`]).
+pub mod amf_op {
+    use super::{opcode, ApiId};
+
+    /// Create an AMF encoder for a given codec and frame geometry.
+    pub const CREATE_ENCODER: u32 = opcode(ApiId::Amf, 0x0001);
+    /// Submit one raw frame to an encoder and produce a coded packet.
+    pub const ENCODE_FRAME: u32 = opcode(ApiId::Amf, 0x0002);
+    /// Destroy a previously created encoder.
+    pub const DESTROY_ENCODER: u32 = opcode(ApiId::Amf, 0x0003);
 }
 
 /// Vulkan request/response body encoders and decoders.
@@ -1380,6 +1422,371 @@ pub mod wgpu {
             let mut r = Reader::new(buf);
             Ok(Self {
                 buffer: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// OptiX request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the OptiX opcodes in
+/// [`optix_op`]. Every multi-byte field is little-endian and a [`Handle`] is
+/// carried as its raw 64-bit value (see [`Handle::raw`]). Short buffers decode
+/// to [`ProtocolError::UnexpectedEof`].
+///
+/// [`optix_op::CONTEXT_CREATE`](super::optix_op::CONTEXT_CREATE) takes an empty
+/// request body, and [`optix_op::DESTROY`](super::optix_op::DESTROY) replies
+/// with an empty (ack) body, so neither needs a struct here.
+pub mod optix {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Response body for
+    /// [`optix_op::CONTEXT_CREATE`](super::optix_op::CONTEXT_CREATE).
+    ///
+    /// The request body is empty, so there is no request struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ContextCreateResponse {
+        /// Handle naming the newly created context.
+        pub context: Handle,
+    }
+
+    impl ContextCreateResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`optix_op::PIPELINE_CREATE`](super::optix_op::PIPELINE_CREATE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PipelineCreateRequest {
+        /// Handle naming the context the pipeline is created in.
+        pub context: Handle,
+    }
+
+    impl PipelineCreateRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.context.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                context: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`optix_op::PIPELINE_CREATE`](super::optix_op::PIPELINE_CREATE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PipelineCreateResponse {
+        /// Handle naming the newly created pipeline.
+        pub pipeline: Handle,
+    }
+
+    impl PipelineCreateResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.pipeline.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                pipeline: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`optix_op::DESTROY`](super::optix_op::DESTROY).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DestroyRequest {
+        /// Handle naming the context or pipeline being destroyed.
+        pub handle: Handle,
+    }
+
+    impl DestroyRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.handle.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                handle: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// SYCL request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the SYCL opcodes in [`sycl_op`].
+/// Every multi-byte field is little-endian and a [`Handle`] is carried as its
+/// raw 64-bit value (see [`Handle::raw`]). Short buffers decode to
+/// [`ProtocolError::UnexpectedEof`].
+///
+/// [`sycl_op::QUEUE_CREATE`](super::sycl_op::QUEUE_CREATE) takes an empty
+/// request body, and [`sycl_op::FREE`](super::sycl_op::FREE) replies with an
+/// empty (ack) body, so neither needs a struct here.
+pub mod sycl {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Response body for
+    /// [`sycl_op::QUEUE_CREATE`](super::sycl_op::QUEUE_CREATE).
+    ///
+    /// The request body is empty, so there is no request struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct QueueCreateResponse {
+        /// Handle naming the newly created queue.
+        pub queue: Handle,
+    }
+
+    impl QueueCreateResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.queue.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                queue: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`sycl_op::MALLOC_DEVICE`](super::sycl_op::MALLOC_DEVICE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MallocDeviceRequest {
+        /// Handle naming the queue the memory is allocated on.
+        pub queue: Handle,
+        /// Size of the allocation in bytes.
+        pub size: u64,
+    }
+
+    impl MallocDeviceRequest {
+        /// Append the encoded body to `out`: a raw `u64` queue handle followed
+        /// by the `u64` allocation size.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.queue.raw().to_le_bytes());
+            out.extend_from_slice(&self.size.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                queue: Handle::from_raw(r.u64()?),
+                size: r.u64()?,
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`sycl_op::MALLOC_DEVICE`](super::sycl_op::MALLOC_DEVICE).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MallocDeviceResponse {
+        /// Handle naming the newly allocated device pointer.
+        pub ptr: Handle,
+    }
+
+    impl MallocDeviceResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.ptr.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                ptr: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`sycl_op::FREE`](super::sycl_op::FREE).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct FreeRequest {
+        /// Handle naming the device pointer being freed.
+        pub ptr: Handle,
+    }
+
+    impl FreeRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.ptr.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                ptr: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+}
+
+/// AMF request/response body encoders and decoders.
+///
+/// These match the canonical wire bodies for the AMF opcodes in [`amf_op`].
+/// Every multi-byte field is little-endian and a [`Handle`] is carried as its
+/// raw 64-bit value (see [`Handle::raw`]). Short buffers decode to
+/// [`ProtocolError::UnexpectedEof`].
+///
+/// [`amf_op::DESTROY_ENCODER`](super::amf_op::DESTROY_ENCODER) replies with an
+/// empty (ack) body, so its response needs no struct here.
+pub mod amf {
+    use super::{Handle, ProtocolError, Reader};
+
+    /// Request body for
+    /// [`amf_op::CREATE_ENCODER`](super::amf_op::CREATE_ENCODER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateEncoderRequest {
+        /// Codec identifier the encoder produces.
+        pub codec: u32,
+        /// Encoded frame width in pixels.
+        pub width: u32,
+        /// Encoded frame height in pixels.
+        pub height: u32,
+    }
+
+    impl CreateEncoderRequest {
+        /// Append the encoded body to `out`: the `u32` codec id followed by the
+        /// `u32` width and `u32` height.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.codec.to_le_bytes());
+            out.extend_from_slice(&self.width.to_le_bytes());
+            out.extend_from_slice(&self.height.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                codec: r.u32()?,
+                width: r.u32()?,
+                height: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for
+    /// [`amf_op::CREATE_ENCODER`](super::amf_op::CREATE_ENCODER).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CreateEncoderResponse {
+        /// Handle naming the newly created encoder.
+        pub encoder: Handle,
+    }
+
+    impl CreateEncoderResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.encoder.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                encoder: Handle::from_raw(r.u64()?),
+            })
+        }
+    }
+
+    /// Request body for [`amf_op::ENCODE_FRAME`](super::amf_op::ENCODE_FRAME).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct EncodeFrameRequest {
+        /// Handle naming the encoder the frame is submitted to.
+        pub encoder: Handle,
+        /// Length of the raw input frame in bytes.
+        pub frame_len: u32,
+    }
+
+    impl EncodeFrameRequest {
+        /// Append the encoded body to `out`: a raw `u64` encoder handle followed
+        /// by the `u32` frame length.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.encoder.raw().to_le_bytes());
+            out.extend_from_slice(&self.frame_len.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                encoder: Handle::from_raw(r.u64()?),
+                frame_len: r.u32()?,
+            })
+        }
+    }
+
+    /// Response body for [`amf_op::ENCODE_FRAME`](super::amf_op::ENCODE_FRAME).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct EncodeFrameResponse {
+        /// Length of the produced coded packet in bytes.
+        pub packet_len: u32,
+    }
+
+    impl EncodeFrameResponse {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.packet_len.to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                packet_len: r.u32()?,
+            })
+        }
+    }
+
+    /// Request body for
+    /// [`amf_op::DESTROY_ENCODER`](super::amf_op::DESTROY_ENCODER).
+    ///
+    /// The reply is an empty (ack) body, so there is no response struct.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DestroyEncoderRequest {
+        /// Handle naming the encoder being destroyed.
+        pub encoder: Handle,
+    }
+
+    impl DestroyEncoderRequest {
+        /// Append the encoded body to `out`.
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.encoder.raw().to_le_bytes());
+        }
+
+        /// Decode a body.
+        pub fn decode(buf: &[u8]) -> Result<Self, ProtocolError> {
+            let mut r = Reader::new(buf);
+            Ok(Self {
+                encoder: Handle::from_raw(r.u64()?),
             })
         }
     }
@@ -2590,6 +2997,265 @@ mod tests {
         );
         assert_eq!(
             wgpu::DestroyBufferRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn optix_api_id_value() {
+        assert_eq!(ApiId::OptiX as u8, 0x09);
+    }
+
+    #[test]
+    fn optix_opcodes_are_in_optix_namespace() {
+        assert_eq!(opcode_api(optix_op::CONTEXT_CREATE), ApiId::OptiX as u8);
+        assert_eq!(opcode_api(optix_op::PIPELINE_CREATE), ApiId::OptiX as u8);
+        assert_eq!(opcode_api(optix_op::DESTROY), ApiId::OptiX as u8);
+        assert_eq!(opcode_api(optix_op::CONTEXT_CREATE), 0x09);
+        assert_eq!(opcode_call(optix_op::CONTEXT_CREATE), 0x0001);
+        assert_eq!(opcode_call(optix_op::PIPELINE_CREATE), 0x0002);
+        assert_eq!(opcode_call(optix_op::DESTROY), 0x0003);
+        assert_ne!(optix_op::CONTEXT_CREATE, optix_op::PIPELINE_CREATE);
+        assert_ne!(optix_op::PIPELINE_CREATE, optix_op::DESTROY);
+    }
+
+    #[test]
+    fn optix_context_create_response_roundtrip() {
+        let resp = optix::ContextCreateResponse {
+            context: Handle::new(19, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(
+            optix::ContextCreateResponse::decode(&b).expect("resp"),
+            resp
+        );
+    }
+
+    #[test]
+    fn optix_pipeline_create_roundtrip() {
+        let req = optix::PipelineCreateRequest {
+            context: Handle::new(19, 2, 4),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(optix::PipelineCreateRequest::decode(&b).expect("req"), req);
+
+        let resp = optix::PipelineCreateResponse {
+            pipeline: Handle::new(20, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(
+            optix::PipelineCreateResponse::decode(&b).expect("resp"),
+            resp
+        );
+    }
+
+    #[test]
+    fn optix_destroy_roundtrip() {
+        let req = optix::DestroyRequest {
+            handle: Handle::new(19, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(optix::DestroyRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn optix_bodies_reject_short_buffers() {
+        assert_eq!(
+            optix::ContextCreateResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            optix::PipelineCreateRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            optix::PipelineCreateResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            optix::DestroyRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn sycl_api_id_value() {
+        assert_eq!(ApiId::Sycl as u8, 0x0A);
+    }
+
+    #[test]
+    fn sycl_opcodes_are_in_sycl_namespace() {
+        assert_eq!(opcode_api(sycl_op::QUEUE_CREATE), ApiId::Sycl as u8);
+        assert_eq!(opcode_api(sycl_op::MALLOC_DEVICE), ApiId::Sycl as u8);
+        assert_eq!(opcode_api(sycl_op::FREE), ApiId::Sycl as u8);
+        assert_eq!(opcode_api(sycl_op::QUEUE_CREATE), 0x0A);
+        assert_eq!(opcode_call(sycl_op::QUEUE_CREATE), 0x0001);
+        assert_eq!(opcode_call(sycl_op::MALLOC_DEVICE), 0x0002);
+        assert_eq!(opcode_call(sycl_op::FREE), 0x0003);
+        assert_ne!(sycl_op::QUEUE_CREATE, sycl_op::MALLOC_DEVICE);
+        assert_ne!(sycl_op::MALLOC_DEVICE, sycl_op::FREE);
+    }
+
+    #[test]
+    fn sycl_queue_create_response_roundtrip() {
+        let resp = sycl::QueueCreateResponse {
+            queue: Handle::new(21, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(sycl::QueueCreateResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn sycl_malloc_device_roundtrip() {
+        let req = sycl::MallocDeviceRequest {
+            queue: Handle::new(21, 2, 4),
+            size: 0x1234_5678_9ABC_DEF0,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 16);
+        assert_eq!(sycl::MallocDeviceRequest::decode(&b).expect("req"), req);
+
+        let resp = sycl::MallocDeviceResponse {
+            ptr: Handle::new(22, Handle::GENERATION_MAX, u32::MAX),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(sycl::MallocDeviceResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn sycl_free_roundtrip() {
+        let req = sycl::FreeRequest {
+            ptr: Handle::new(22, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(sycl::FreeRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn sycl_bodies_reject_short_buffers() {
+        assert_eq!(
+            sycl::QueueCreateResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            sycl::MallocDeviceRequest::decode(&[0u8; 15]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            sycl::MallocDeviceResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            sycl::FreeRequest::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn amf_api_id_value() {
+        assert_eq!(ApiId::Amf as u8, 0x0B);
+    }
+
+    #[test]
+    fn amf_opcodes_are_in_amf_namespace() {
+        assert_eq!(opcode_api(amf_op::CREATE_ENCODER), ApiId::Amf as u8);
+        assert_eq!(opcode_api(amf_op::ENCODE_FRAME), ApiId::Amf as u8);
+        assert_eq!(opcode_api(amf_op::DESTROY_ENCODER), ApiId::Amf as u8);
+        assert_eq!(opcode_api(amf_op::CREATE_ENCODER), 0x0B);
+        assert_eq!(opcode_call(amf_op::CREATE_ENCODER), 0x0001);
+        assert_eq!(opcode_call(amf_op::ENCODE_FRAME), 0x0002);
+        assert_eq!(opcode_call(amf_op::DESTROY_ENCODER), 0x0003);
+        assert_ne!(amf_op::CREATE_ENCODER, amf_op::ENCODE_FRAME);
+        assert_ne!(amf_op::ENCODE_FRAME, amf_op::DESTROY_ENCODER);
+    }
+
+    #[test]
+    fn amf_create_encoder_roundtrip() {
+        let req = amf::CreateEncoderRequest {
+            codec: 0xDEAD_BEEF,
+            width: 1920,
+            height: 1080,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 12);
+        assert_eq!(amf::CreateEncoderRequest::decode(&b).expect("req"), req);
+
+        let resp = amf::CreateEncoderResponse {
+            encoder: Handle::new(23, 5, 42),
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(amf::CreateEncoderResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn amf_encode_frame_roundtrip() {
+        let req = amf::EncodeFrameRequest {
+            encoder: Handle::new(23, 2, 4),
+            frame_len: u32::MAX,
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 12);
+        assert_eq!(amf::EncodeFrameRequest::decode(&b).expect("req"), req);
+
+        let resp = amf::EncodeFrameResponse {
+            packet_len: 0x1234_5678,
+        };
+        let mut b = Vec::new();
+        resp.encode(&mut b);
+        assert_eq!(b.len(), 4);
+        assert_eq!(amf::EncodeFrameResponse::decode(&b).expect("resp"), resp);
+    }
+
+    #[test]
+    fn amf_destroy_encoder_roundtrip() {
+        let req = amf::DestroyEncoderRequest {
+            encoder: Handle::new(23, 3, 11),
+        };
+        let mut b = Vec::new();
+        req.encode(&mut b);
+        assert_eq!(b.len(), 8);
+        assert_eq!(amf::DestroyEncoderRequest::decode(&b).expect("req"), req);
+    }
+
+    #[test]
+    fn amf_bodies_reject_short_buffers() {
+        assert_eq!(
+            amf::CreateEncoderRequest::decode(&[0u8; 11]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            amf::CreateEncoderResponse::decode(&[0u8; 7]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            amf::EncodeFrameRequest::decode(&[0u8; 11]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            amf::EncodeFrameResponse::decode(&[0u8; 3]),
+            Err(ProtocolError::UnexpectedEof)
+        );
+        assert_eq!(
+            amf::DestroyEncoderRequest::decode(&[0u8; 7]),
             Err(ProtocolError::UnexpectedEof)
         );
     }
